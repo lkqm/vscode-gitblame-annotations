@@ -1,0 +1,43 @@
+{
+    "name": "vscode-gitblame",
+    "displayName": "Git Blame",
+    "description": "Display git blame in editor gutter",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "SCM Providers"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "git.blame.toggle",
+                "title": "Git Blame: Toggle Annotations"
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.80.0",
+        "@types/node": "^16.11.7",
+        "@typescript-eslint/eslint-plugin": "^5.42.0",
+        "@typescript-eslint/parser": "^5.42.0",
+        "eslint": "^8.26.0",
+        "typescript": "^4.8.4"
+    },
+    "dependencies": {
+        "simple-git": "^3.19.0"
+    }
+}
