@@ -1,8 +1,13 @@
 {
-    "name": "vscode-gitblame",
-    "displayName": "Git Blame",
-    "description": "Display git blame in editor gutter",
-    "version": "0.0.1",
+    "name": "gitblame-annotations",
+    "displayName": "Git Blame Annotations",
+    "description": "Display git blame in editor gutter like JetBrains IDEs",
+    "version": "0.0.3",
+    "publisher": "lkqm",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/lkqm/vscode-gitblame-annotations.git"
+    },
     "engines": {
         "vscode": "^1.80.0"
     },
@@ -12,14 +17,35 @@
     "activationEvents": [
         "onStartupFinished"
     ],
+    "icon": "images/logo.png",
     "main": "./out/extension.js",
     "contributes": {
         "commands": [
             {
                 "command": "git.blame.toggle",
-                "title": "Git Blame: Toggle Annotations"
+                "title": "Git: Toggle Annotations"
+            },
+            {
+                "command": "git.blame.show",
+                "title": "Annotate with Git Blame"
+            },
+            {
+                "command": "git.blame.hide",
+                "title": "Close Annotations"
             }
-        ]
+        ],
+        "menus": {
+            "editor/lineNumber/context": [
+                {
+                    "command": "git.blame.show",
+                    "when": "gitblame.showMenuState"
+                },
+                {
+                    "command": "git.blame.hide",
+                    "when": "gitblame.hideMenuState"
+                }
+            ]
+        }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
@@ -36,8 +62,5 @@
         "@typescript-eslint/parser": "^5.42.0",
         "eslint": "^8.26.0",
         "typescript": "^4.8.4"
-    },
-    "dependencies": {
-        "simple-git": "^3.19.0"
     }
 }

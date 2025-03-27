@@ -1,287 +1,539 @@
-import simpleGit from 'simple-git';
 import * as vscode from 'vscode';
-
-interface Blame {
-    author: string;
-    commit: string;
-    line: number;
-    summary?: string;
-    timestamp?: number;
-}
+import { Uri } from 'vscode';
+import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId } from './git';
 
 
+// 全局状态
+const fileBlameStates = new Map<string, boolean>();
+const fileDecorations = new Map<string, {
+    decorationType: vscode.TextEditorDecorationType | undefined,
+    decorationOptions: vscode.DecorationOptions[] | undefined,
+    hoverProvider: vscode.Disposable | undefined,
+}>();
+const MaxTitleWidth = 25;
+let previousThemeKind = vscode.window.activeColorTheme.kind;
+
+/**
+ * 激活插件
+ */
 export function activate(context: vscode.ExtensionContext) {
-    let decorationType: vscode.TextEditorDecorationType | undefined;
-    let hoverProvider: vscode.Disposable | undefined;
-    // 用于跟踪每个文件的显示状态
-    const fileBlameStates = new Map<string, boolean>();
-
-    const formatDate = (timestamp: number): string => {
-        const date = new Date(timestamp * 1000);
-        return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
-    };
-
-    const formatDateWithTime = (timestamp: number): string => {
-        const date = new Date(timestamp * 1000);
-        return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-    };
-
-    const updateDecorations = async (editor: vscode.TextEditor) => {
-        if (!editor) {
-            return;
-        }
-
-        const document = editor.document;
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-
-        if (!workspaceFolder) {
-            return;
-        }
-
-        // 检查当前文件是否应该显示 blame
-        const shouldShowBlame = fileBlameStates.get(document.fileName);
-        if (!shouldShowBlame) {
-            // 如果不需要显示，清除装饰器
-            if (decorationType) {
-                decorationType.dispose();
-                decorationType = undefined;
-            }
-            if (hoverProvider) {
-                hoverProvider.dispose();
-                hoverProvider = undefined;
-            }
-            return;
-        }
-
-        try {
-            const git = simpleGit(workspaceFolder.uri.fsPath);
-            // 使用 raw 命令执行 git blame
-            const blameResult = await git.raw(['blame', '--line-porcelain', document.fileName]);
-
-            // 解析 blame 输出
-            const lines = blameResult.split('\n');
-            const blameLines: Array<{ author: string; date: string; commit: string; summary?: string; timestamp?: number; commited: boolean, label: string, code: string }> = [];
-            let currentLine: any = {};
-            let lineNumber = 0;
-
-            let newLine = true;
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (newLine) {
-                    let parts = line.split(' ');
-                    let commit = parts[0];
-                    if (commit == '') {
-                        continue;
-                    }
-                    currentLine = {
-                        commit: commit,
-                        commited: commit !== '0000000000000000000000000000000000000000',
-                    };
-                    blameLines.push(currentLine);
-                    newLine = false;
-                } else if (line.startsWith('author ')) {
-                    currentLine.author = line.substring(7);
-                } else if (line.startsWith('author-time ')) {
-                    const timestamp = parseInt(line.substring(11));
-                    currentLine.date = formatDate(timestamp);
-                    currentLine.timestamp = timestamp;
-                } else if (line.startsWith('summary ')) {
-                    currentLine.summary = line.substring(8);
-                } else if (line.startsWith('\t')) {
-                    currentLine.code = line.substring(1);
-                    lineNumber++;
-                    newLine = true;
-                }
-            }
-
-
-            const decorations: vscode.DecorationOptions[] = [];
-            const blameInfoMap = new Map<number, Blame>();
-
-            // 确保 blameLines 数组长度与文档行数匹配
-            while (blameLines.length < document.lineCount) {
-                blameLines.push(blameLines[blameLines.length - 1] || {
-                    author: 'Unknown',
-                    date: 'Unknown',
-                    commit: 'Unknown',
-                    commited: false,
-                });
-            }
-            // 计算已提交行的label格式
-            blameLines.forEach(line => {
-                if (line.commited) {
-                    line.label = `${line.date} ${line.author}`;
-                } else {
-                    line.label = '·';  // 使用一个可见的占位符字符
-                }
-            });
-
-            // 找出最长的label长度
-            const maxLabelLength = blameLines.reduce((max, line) => {
-                if (line.commited && line.label) {
-                    return Math.max(max, line.label.length);
-                }
-                return max;
-            }, 0);
-
-
-            blameLines.forEach((line, index) => {
-                const range = new vscode.Range(
-                    new vscode.Position(index, 0),
-                    new vscode.Position(index, 0)
-                );
-
-                const blameInfo: Blame = {
-                    line: index + 1,
-                    commit: line.commit,
-                    author: line.author,
-                    timestamp: line.timestamp,
-                    summary: line.summary
-                };
-
-                blameInfoMap.set(index, blameInfo);
-
-                let paddingSize = maxLabelLength - line.label.length
-                decorations.push({
-                    range,
-                    renderOptions: {
-                        before: {
-                            contentText: line.label + '·'.repeat(paddingSize),
-                            color: line.commited ? '#666666' : '#00000000',
-                            margin: '0 1em 0 0'
-                        }
-                    }
-                });
-            });
-
-            if (decorationType) {
-                decorationType.dispose();
-            }
-
-            decorationType = vscode.window.createTextEditorDecorationType({
-                before: {
-                    color: '#666666',
-                    margin: '0 1em 0 0'
-                }
-            });
-
-            editor.setDecorations(decorationType, decorations);
-
-            // 注册悬停提供器
-            if (hoverProvider) {
-                hoverProvider.dispose();
-            }
-
-            hoverProvider = vscode.languages.registerHoverProvider(
-                { scheme: 'file' },
-                {
-                    provideHover(document: vscode.TextDocument, position: vscode.Position) {
-                        // 检查鼠标是否在 gutter 区域内
-                        const line = document.lineAt(position.line);
-                        const gutterWidth = maxLabelLength + 1; // 加1是为了考虑padding
-                        if (position.character > gutterWidth) {
-                            return undefined;
-                        }
-
-                        const blameInfo = blameInfoMap.get(position.line);
-                        if (blameInfo) {
-                            const content = new vscode.MarkdownString();
-                            content.appendMarkdown(`commit: [${blameInfo.commit}](command:git.showCommit?${encodeURIComponent(JSON.stringify(blameInfo))})\n\n`);
-                            content.appendMarkdown(`Author: ${blameInfo.author}\n\n`);
-                            content.appendMarkdown(`Date: ${blameInfo.timestamp ? formatDateWithTime(blameInfo.timestamp) : ""}\n\n`);
-                            if (blameInfo.summary) {
-                                content.appendMarkdown(`${blameInfo.summary}`);
-                            }
-                            content.isTrusted = true;
-                            return new vscode.Hover(content);
-                        }
-                    }
-                }
-            );
-
-        } catch (error: any) {
-            console.error('Git blame error:', error);
-            vscode.window.showErrorMessage(`Git Blame 错误: ${error.message || '未知错误'}`);
-        }
-    };
-
-    const toggleCommand = vscode.commands.registerCommand('git.blame.toggle', () => {
-        const editor = vscode.window.activeTextEditor;
-        if (editor) {
-            const currentState = fileBlameStates.get(editor.document.fileName) || false;
-            fileBlameStates.set(editor.document.fileName, !currentState);
-            updateDecorations(editor);
-        }
-    });
-
-    const showCommitCommand = vscode.commands.registerCommand('git.showCommit', async (blameInfo: Blame) => {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (workspaceFolder) {
-            const git = simpleGit(workspaceFolder.uri.fsPath);
-            try {
-                console.log('Attempting to show commit:', blameInfo.commit);
-                // 使用 raw 命令执行 git show
-                const commit = await git.raw(['show', blameInfo.commit]);
-                console.log('Commit info retrieved successfully');
-                const document = await vscode.workspace.openTextDocument({
-                    content: commit,
-                    language: 'git-commit'
-                });
-                await vscode.window.showTextDocument(document);
-            } catch (error: any) {
-                console.error('Error showing commit:', error);
-                console.error('Error details:', {
-                    message: error.message,
-                    stack: error.stack,
-                    command: error.command
-                });
-                vscode.window.showErrorMessage(`查看提交历史失败: ${error.message || '未知错误'}`);
-            }
-        }
-    });
-
-    // 监听文档变化
-    const changeDocumentSubscription = vscode.workspace.onDidChangeTextDocument(event => {
-        const editor = vscode.window.activeTextEditor;
-        if (editor && editor.document === event.document) {
-            updateDecorations(editor);
-        }
-    });
-
-    // 监听编辑器变化
-    const changeEditorSubscription = vscode.window.onDidChangeActiveTextEditor(editor => {
-        if (editor) {
-            // 根据文件的显示状态决定是否更新装饰器
-            const shouldShowBlame = fileBlameStates.get(editor.document.fileName);
-            if (shouldShowBlame) {
-                updateDecorations(editor);
-            } else {
-                // 如果不需要显示，清除装饰器
-                if (decorationType) {
-                    decorationType.dispose();
-                    decorationType = undefined;
-                }
-                if (hoverProvider) {
-                    hoverProvider.dispose();
-                    hoverProvider = undefined;
-                }
-            }
-        }
-    });
-
-    // 监听文档关闭事件
-    const closeDocumentSubscription = vscode.workspace.onDidCloseTextDocument(document => {
-        // 当文档关闭时，移除其状态
-        fileBlameStates.delete(document.fileName);
-    });
-
-    context.subscriptions.push(toggleCommand, showCommitCommand, changeDocumentSubscription, changeEditorSubscription, closeDocumentSubscription);
-
-    // 初始化时不显示任何装饰器
+    registerCommands(context);
+    registerListeners(context);
     const editor = vscode.window.activeTextEditor;
     if (editor) {
-        fileBlameStates.set(editor.document.fileName, false);
+        updateMenuContext(editor.document);
     }
 }
 
-export function deactivate() { } 
+/**
+ * 卸载插件
+ */
+export function deactivate() {
+    for (const [_, decorations] of fileDecorations) {
+        if (decorations.decorationType) {
+            decorations.decorationType.dispose();
+        }
+        if (decorations.hoverProvider) {
+            decorations.hoverProvider.dispose();
+        }
+    }
+    fileDecorations.clear();
+    fileBlameStates.clear();
+}
+
+
+/**
+ * 注册命令
+ */
+function registerCommands(context: vscode.ExtensionContext) {
+
+    // Toggle blame annotations
+    const toggleCommand = vscode.commands.registerCommand('git.blame.toggle', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const fileBlameState = fileBlameStates.get(editor.document.uri.toString()) || false;
+            if (!fileBlameState) {
+                const successed = await showDecorations(editor);
+                if (successed) {
+                    updateMenuContext(editor.document, true);
+                }
+            } else {
+                const successed = await hideDecorations(editor);
+                if (successed) {
+                    updateMenuContext(editor.document, false);
+                }
+            }
+        }
+    });
+
+    // Show blame annotations
+    const showCommand = vscode.commands.registerCommand('git.blame.show', async (event?: any) => {
+        const editors = event && event.uri ? vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === event.uri.toString()) : [vscode.window.activeTextEditor];
+        for (const editor of editors) {
+            if (editor) {
+                const successed = await showDecorations(editor);
+                if (successed) {
+                    updateMenuContext(editor.document, true);
+                }
+            }
+        }
+    });
+
+    // Hide blame annotations
+    const hideCommand = vscode.commands.registerCommand('git.blame.hide', async (event?: any) => {
+        const editors = event && event.uri ? vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === event.uri.toString()) : [vscode.window.activeTextEditor];
+        for (const editor of editors) {
+            if (editor) {
+                const successed = await hideDecorations(editor);
+                if (successed) {
+                    updateMenuContext(editor.document, false);
+                }
+            }
+        }
+    });
+
+    // View commit details
+    const viewCommitCommand = vscode.commands.registerCommand('git.blame.viewCommit', async (commitId: string, summary: string = "", fileName: string = "") => {
+        if (fileName) {
+            const repositoryRoot = await getGitRepository(fileName);
+            const title = `${commitId.substring(0, 7)} ${summary ? `- ${summary.substring(0, 20)}` : ""}`;
+            let parentCommitId = await getParentCommitId(repositoryRoot, commitId);
+            if (!parentCommitId) {
+                parentCommitId = await getEmptyTree(repositoryRoot);
+            }
+            const multiDiffSourceUri = Uri.from({ scheme: 'scm-history-item', path: `${repositoryRoot}/${parentCommitId}..${commitId}` });
+            const changes = await getChanges(repositoryRoot, parentCommitId, commitId);
+            const resources = changes.map(c => toMultiFileDiffEditorUris(c, parentCommitId, commitId));
+
+            await vscode.commands.executeCommand('_workbench.openMultiDiffEditor', { multiDiffSourceUri, title, resources });
+        }
+    });
+    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand);
+}
+
+/**
+ * 注册事件
+ */
+function registerListeners(context: vscode.ExtensionContext) {
+
+    // Editor Change
+    const editorChangeSubscription = vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (editor) {
+            updateMenuContext(editor.document);
+        }
+    });
+
+    // Visible Editor Change
+    const visibleEditorChangeSubscription = vscode.window.onDidChangeVisibleTextEditors(editors => {
+        for (const editor of editors) {
+            const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
+            if (fileBlameState) {
+                showDecorations(editor);
+            }
+        }
+    });
+
+    // Document Close
+    const closeDocumentSubscription = vscode.workspace.onDidCloseTextDocument(document => {
+        const documentUri = document.uri.toString();
+        fileBlameStates.delete(documentUri);
+        const decorations = fileDecorations.get(documentUri);
+        if (decorations) {
+            if (decorations.decorationType) {
+                decorations.decorationType.dispose();
+            }
+            if (decorations.hoverProvider) {
+                decorations.hoverProvider.dispose();
+            }
+            fileDecorations.delete(documentUri);
+        }
+    });
+
+    // Document Save
+    const saveDocumentSubscription = vscode.workspace.onDidSaveTextDocument(document => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document === document) {
+            const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
+            if (fileBlameState) {
+                showDecorations(editor, true);
+            }
+        }
+    });
+
+    // Theme Change
+    const themeChangeSubscription = vscode.window.onDidChangeActiveColorTheme((e) => {
+        if (previousThemeKind !== e.kind) {
+            const currentIsDarkTheme = (e.kind === vscode.ColorThemeKind.Dark || e.kind === vscode.ColorThemeKind.HighContrast);
+            const previousIsDarkTheme = (previousThemeKind === vscode.ColorThemeKind.Dark || previousThemeKind === vscode.ColorThemeKind.HighContrast);
+            previousThemeKind = e.kind;
+            if (currentIsDarkTheme !== previousIsDarkTheme) {
+                for (const editor of vscode.window.visibleTextEditors) {
+                    const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
+                    if (fileBlameState) {
+                        showDecorations(editor, true);
+                    }
+                }
+            }
+        }
+    });
+
+    context.subscriptions.push(editorChangeSubscription, visibleEditorChangeSubscription, themeChangeSubscription, closeDocumentSubscription, saveDocumentSubscription);
+}
+
+/**
+ * 显示装饰器
+ */
+async function showDecorations(editor: vscode.TextEditor, reload: boolean = false): Promise<boolean> {
+    const document = editor.document;
+    const documentUri = document.uri.toString();
+    let decorations = fileDecorations.get(documentUri);
+
+    // Skip diff editor
+    if (document.uri.scheme !== 'file') {
+        return false;
+    }
+
+    // Use cache
+    if (!reload && decorations && decorations.decorationType && decorations.decorationOptions) {
+        editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+        fileBlameStates.set(documentUri, true);
+        return true;
+    }
+
+    // Check file
+    const repositoryRoot = await getGitRepository(document.fileName);
+    if (!repositoryRoot) {
+        return false;
+    }
+    const tracked = await isFileTracked(repositoryRoot, document.fileName);
+    if (!tracked) {
+        return false;
+    }
+    if (decorations) {
+        decorations.decorationType?.dispose();
+        decorations.hoverProvider?.dispose();
+        decorations.decorationType = undefined;
+        decorations.decorationOptions = undefined;
+        decorations.hoverProvider = undefined;
+    } else {
+        decorations = {
+            decorationType: undefined,
+            decorationOptions: undefined,
+            hoverProvider: undefined,
+        }
+    }
+    fileDecorations.set(documentUri, decorations);
+
+
+    try {
+        const blames = await getBlames(repositoryRoot, document.fileName);
+        while (blames.length < document.lineCount) {
+            blames.push({
+                commit: '',
+                author: '',
+                timestamp: 0,
+                summary: '',
+                commited: false,
+                title: '',
+                line: blames.length + 1
+            });
+        }
+        const maxWidth = fillTitles(blames);
+        if (maxWidth <= 0) {
+            return false;
+        }
+
+        const decorationOptions: vscode.DecorationOptions[] = [];
+        const blamesMap = new Map<number, Blame>();
+        const commitColors = new Map<string, string>();
+        blames.forEach((line, index) => {
+            blamesMap.set(index, line);
+            const range = new vscode.Range(
+                new vscode.Position(index, 0),
+                new vscode.Position(index, 0)
+            );
+            let color = commitColors.get(line.commit);
+            if (!color) {
+                color = getCommitColor(line.commit);
+                commitColors.set(line.commit, color);
+            }
+
+            decorationOptions.push({
+                range,
+                renderOptions: {
+                    before: {
+                        contentText: `\u2007${line.title}\u2007`,
+                        color: '#666666',
+                        margin: '0 1ch 0 0',
+                        width: `${maxWidth + 2}ch`,
+                        fontWeight: 'normal',
+                        fontStyle: 'normal',
+                        backgroundColor: color
+                    }
+                }
+            });
+        });
+
+        // Decorations
+        if (decorations.decorationType) {
+            decorations.decorationType.dispose();
+        }
+        decorations.decorationOptions = decorationOptions;
+        decorations.decorationType = vscode.window.createTextEditorDecorationType({});
+        editor.setDecorations(decorations.decorationType, decorationOptions);
+
+        // Hover provider
+        if (decorations.hoverProvider) {
+            decorations.hoverProvider.dispose();
+        }
+        decorations.hoverProvider = vscode.languages.registerHoverProvider(
+            { scheme: 'file', pattern: document.fileName },
+            {
+                provideHover(document: vscode.TextDocument, position: vscode.Position) {
+                    if (position.character > 0) {
+                        return undefined;
+                    }
+
+                    const blame = blamesMap.get(position.line);
+                    if (blame && blame.commited) {
+                        const date = new Date(blame.timestamp * 1000);
+                        const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+                        const content = new vscode.MarkdownString();
+                        content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
+                        content.appendMarkdown(`Author: ${blame.author}  \n`);
+                        content.appendMarkdown(`Date: ${dateText}  \n`);
+                        if (blame.summary) {
+                            content.appendMarkdown(`\n\n${blame.summary}`);
+                        }
+                        content.isTrusted = true;
+                        return new vscode.Hover(content);
+                    }
+                }
+            }
+        );
+        fileBlameStates.set(documentUri, true);
+        return true;
+    } catch (error: any) {
+        vscode.window.showErrorMessage(`Git Blame error: ${error.message || 'Unknown error'}`);
+        return false;
+    }
+}
+
+/**
+ * 隐藏装饰器
+ */
+async function hideDecorations(editor: vscode.TextEditor): Promise<boolean> {
+    const documentUri = editor.document.uri.toString();
+    fileBlameStates.set(documentUri, false);
+    let decorations = fileDecorations.get(documentUri);
+    if (decorations) {
+        if (decorations.decorationType) {
+            decorations.decorationType.dispose();
+            decorations.decorationType = undefined;
+            decorations.decorationOptions = undefined;
+        }
+        if (decorations.hoverProvider) {
+            decorations.hoverProvider.dispose();
+            decorations.hoverProvider = undefined;
+        }
+        return true;
+    }
+    return false;
+}
+
+
+async function updateMenuContext(document: vscode.TextDocument, currentState: boolean | undefined = undefined) {
+    if (currentState !== undefined) {
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !currentState);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', currentState);
+        return;
+    }
+
+    // Skip diff editor
+    if (document.uri.scheme !== 'file') {
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+        return;
+    }
+
+    // check repository root
+    const repositoryRoot = await getGitRepository(document.fileName);
+    if (!repositoryRoot) {
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+        return;
+    }
+
+    // check file tracked
+    const fileTracked = await isFileTracked(repositoryRoot, document.fileName);
+    if (!fileTracked) {
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+        return;
+    }
+
+    // check file blame state
+    const fileBlameState = fileBlameStates.get(document.uri.toString());
+    vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !fileBlameState);
+    vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', fileBlameState);
+}
+
+
+function fillTitles(blames: Blame[]): number {
+    let maxWidth = 0;
+    const textWidths = new Map<string, { width: number, widths: number[] }>();
+    blames.forEach(line => {
+        if (line.commited) {
+            const date = new Date(line.timestamp * 1000);
+            const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+            line.title = `${dateText} ${line.author}`;
+        } else {
+            line.title = '';
+        }
+
+        // calculate title width
+        if (!textWidths.has(line.commit)) {
+            const { width, widths } = calculateTextWidth(line.title);
+            textWidths.set(line.commit, { width, widths });
+            if (width > maxWidth) {
+                maxWidth = width;
+            }
+        }
+    });
+
+    if (maxWidth > MaxTitleWidth) {
+        maxWidth = MaxTitleWidth;
+        // trancate title
+        blames.forEach(line => {
+            const { width, widths } = textWidths.get(line.commit) || { width: 0, widths: [] };
+            if (width > maxWidth) {
+                line.title = trancateText(line.title, maxWidth - 1, widths) + "…";
+            }
+        });
+    }
+
+    return maxWidth;
+}
+
+// ------------------------------------------------------------
+// utils
+// ------------------------------------------------------------
+
+async function isFileTracked(repositoryRoot: string, file: string): Promise<boolean> {
+    const fileStatus = await getFileStatus(repositoryRoot, file);
+    return fileStatus !== "untracked" && fileStatus !== "index_add";
+}
+
+function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
+    switch (change.status) {
+        case "index_added":
+            return {
+                originalUri: undefined,
+                modifiedUri: toGitUri(change.uri, modifiedRef)
+            };
+        case "deleted":
+            return {
+                originalUri: toGitUri(change.uri, originalRef),
+                modifiedUri: undefined
+            };
+        case "index_renamed":
+            return {
+                originalUri: toGitUri(change.originalUri, originalRef),
+                modifiedUri: toGitUri(change.uri, modifiedRef)
+            };
+        default:
+            return {
+                originalUri: toGitUri(change.uri, originalRef),
+                modifiedUri: toGitUri(change.uri, modifiedRef)
+            };
+    }
+}
+
+function toGitUri(uri: Uri, ref: string, options: { submoduleOf?: string, replaceFileExtension?: boolean, scheme?: string } = {}): Uri {
+    const params = {
+        path: uri.fsPath,
+        submoduleOf: "",
+        ref
+    };
+
+    if (options.submoduleOf) {
+        params.submoduleOf = options.submoduleOf;
+    }
+
+    let path = uri.path;
+
+    if (options.replaceFileExtension) {
+        path = `${path}.git`;
+    } else if (options.submoduleOf) {
+        path = `${path}.diff`;
+    }
+
+    return uri.with({ scheme: options.scheme ?? 'git', path, query: JSON.stringify(params) });
+}
+
+
+function calculateTextWidth(text: string): { width: number, widths: number[] } {
+    let width = 0;
+    const widths = [];
+    for (const char of text) {
+        const w = getCharacterWidth(char);
+        widths.push(w);
+        width += w;
+    }
+    return { width, widths };
+}
+
+
+function getCharacterWidth(char: string): number {
+    const code = char.charCodeAt(0);
+
+    // 东亚文字 (中文、日文、韩文等)
+    if ((code >= 0x3000 && code <= 0x9FFF) ||
+        (code >= 0xAC00 && code <= 0xD7AF) ||
+        (code >= 0xF900 && code <= 0xFAFF) ||
+        (code >= 0xFF00 && code <= 0xFFEF)) {
+        return 2;
+    }
+
+    // 表情符号和特殊符号
+    if (code >= 0x1F300 && code <= 0x1F9FF) {
+        return 2;
+    }
+
+    // 组合字符标记
+    if (code >= 0x0300 && code <= 0x036F) {
+        return 0;
+    }
+
+    return 1;
+}
+
+function trancateText(text: string, maxWidth: number, widths: number[]): string {
+    let truncatedText = '';
+    let currentWidth = 0;
+
+    for (let i = 0; i < widths.length; i++) {
+        if (currentWidth + widths[i] <= maxWidth) {
+            truncatedText += text[i];
+            currentWidth += widths[i];
+        } else {
+            break;
+        }
+    }
+    return truncatedText;
+}
+
+function getCommitColor(commit: string): string {
+    let hash = 0;
+    for (let i = 0; i < commit.length; i++) {
+        hash = commit.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const isDarkTheme = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark || vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrast;
+    const h = hash % 360;
+    if (isDarkTheme) {
+        return `hsl(${h}, 15%, 15%)`;
+    } else {
+        return `hsl(${h}, 20%, 95%)`;
+    }
+}
