@@ -3,8 +3,9 @@ import path from 'path';
 import { Uri } from 'vscode';
 
 export interface Blame {
-    line: number;
+    lines: [number, number][];
     author: string;
+    mail: string;
     commit: string;
     summary: string;
     timestamp: number;
@@ -68,7 +69,7 @@ export async function getGitRepository(filePath: string): Promise<string> {
  * 获取文件的 blame 信息
  */
 export async function getBlames(repositoryRoot: string, file: string): Promise<Blame[]> {
-    const blame = await exec(repositoryRoot, ['blame', '--line-porcelain', file]);
+    const blame = await exec(repositoryRoot, ['blame', '--incremental', file]);
     return parseBlames(blame)
 }
 
@@ -127,55 +128,66 @@ export async function getFileStatus(repositoryRoot: string, filename: string): P
     }
 }
 
-
 /**
- * 解析 blame 信息
+ * 解析增量 blame 信息
  */
+
 function parseBlames(blame: string): Blame[] {
-    const blames: Blame[] = []
+    const blames: Blame[] = [];
     const lines = blame.split('\n');
 
-    let currentLine: Blame = {
-        line: 0,
-        commit: '',
+    let currentBlock: Blame = {
+        lines: [],
         author: '',
+        mail: '',
+        commit: '',
         summary: '',
         timestamp: 0,
         commited: false,
         title: '',
     }
-    let newLine = true;
+    const commitToBlock = new Map<string, Blame>();
+    let newBlock = true;
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (newLine) {
+        if (newBlock) {
             let parts = line.split(' ');
             let commit = parts[0];
             if (commit == '') {
                 continue;
             }
-            currentLine = {
-                line: parseInt(parts[2]),
-                commit: commit,
-                author: '',
-                summary: '',
-                timestamp: 0,
-                commited: (commit !== '0000000000000000000000000000000000000000'),
-                title: '',
+            const commitBlock = commitToBlock.get(commit);
+            if (commitBlock) {
+                commitBlock.lines.push([parseInt(parts[2]), parseInt(parts[3])]);
+                currentBlock = commitBlock;
+            } else {
+                currentBlock = {
+                    lines: [[parseInt(parts[2]), parseInt(parts[3])]],
+                    commit: commit,
+                    author: '',
+                    mail: '',
+                    summary: '',
+                    timestamp: 0,
+                    commited: (commit !== '0000000000000000000000000000000000000000'),
+                    title: '',
+                }
+                blames.push(currentBlock);
+                commitToBlock.set(commit, currentBlock);
             }
-            blames.push(currentLine);
-            newLine = false;
+            newBlock = false;
         } else if (line.startsWith('author ')) {
-            currentLine.author = line.substring(7);
+            currentBlock.author = line.substring(7);
+        } else if (line.startsWith('author-mail ')) {
+            currentBlock.mail = line.substring(12);
         } else if (line.startsWith('author-time ')) {
             const timestamp = parseInt(line.substring(11));
-            currentLine.timestamp = timestamp;
+            currentBlock.timestamp = timestamp;
         } else if (line.startsWith('summary ')) {
-            currentLine.summary = line.substring(8);
-        } else if (line.startsWith('\t')) {
-            newLine = true;
+            currentBlock.summary = line.substring(8);
+        } else if (line.startsWith('filename ')) {
+            newBlock = true;
         }
     }
-
     return blames;
 }
 

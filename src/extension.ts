@@ -1,3 +1,4 @@
+import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId } from './git';
@@ -200,15 +201,6 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         return true;
     }
 
-    // Check file
-    const repositoryRoot = await getGitRepository(document.fileName);
-    if (!repositoryRoot) {
-        return false;
-    }
-    const tracked = await isFileTracked(repositoryRoot, document.fileName);
-    if (!tracked) {
-        return false;
-    }
     if (decorations) {
         decorations.decorationType?.dispose();
         decorations.hoverProvider?.dispose();
@@ -224,54 +216,55 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
     }
     fileDecorations.set(documentUri, decorations);
 
-
     try {
-        const blames = await getBlames(repositoryRoot, document.fileName);
-        while (blames.length < document.lineCount) {
-            blames.push({
-                commit: '',
-                author: '',
-                timestamp: 0,
-                summary: '',
-                commited: false,
-                title: '',
-                line: blames.length + 1
-            });
-        }
+        const blames = await getBlames(path.dirname(document.fileName), document.fileName);
         const maxWidth = fillTitles(blames);
         if (maxWidth <= 0) {
             return false;
         }
+        const maxLine = Math.max(...blames.flatMap(blame => blame.lines).map(line => line[0] + line[1] - 1));
+        if (maxLine < document.lineCount) {
+            blames.push({
+                lines: [[maxLine + 1, document.lineCount - maxLine]],
+                commit: '0000000000000000000000000000000000000000',
+                author: '',
+                mail: '',
+                timestamp: 0,
+                summary: '',
+                commited: false,
+                title: '',
+            });
+        }
 
         const decorationOptions: vscode.DecorationOptions[] = [];
         const blamesMap = new Map<number, Blame>();
-        const commitColors = new Map<string, string>();
-        blames.forEach((line, index) => {
-            blamesMap.set(index, line);
-            const range = new vscode.Range(
-                new vscode.Position(index, 0),
-                new vscode.Position(index, 0)
-            );
-            let color = commitColors.get(line.commit);
-            if (!color) {
-                color = getCommitColor(line.commit);
-                commitColors.set(line.commit, color);
-            }
-
-            decorationOptions.push({
-                range,
-                renderOptions: {
-                    before: {
-                        contentText: `\u2007${line.title}\u2007`,
-                        color: '#666666',
-                        margin: '0 1ch 0 0',
-                        width: `${maxWidth + 2}ch`,
-                        fontWeight: 'normal',
-                        fontStyle: 'normal',
-                        backgroundColor: color
-                    }
+        blames.forEach((blame) => {
+            const color = getCommitColor(blame.commit);
+            blame.lines.forEach((line) => {
+                const startIndex = line[0] - 1;
+                const endIndex = startIndex + (line[1] - 1);
+                for (let i = startIndex; i <= endIndex; i++) {
+                    blamesMap.set(i, blame);
+                    const range = new vscode.Range(
+                        new vscode.Position(i, 0),
+                        new vscode.Position(i, 0)
+                    );
+                    decorationOptions.push({
+                        range,
+                        renderOptions: {
+                            before: {
+                                contentText: `\u2007${blame.title}\u2007`,
+                                color: '#666666',
+                                margin: '0 1ch 0 0',
+                                width: `${maxWidth + 2}ch`,
+                                fontWeight: 'normal',
+                                fontStyle: 'normal',
+                                backgroundColor: color
+                            }
+                        }
+                    });
                 }
-            });
+            })
         });
 
         // Decorations
@@ -315,7 +308,7 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         fileBlameStates.set(documentUri, true);
         return true;
     } catch (error: any) {
-        vscode.window.showErrorMessage(`Git Blame error: ${error.message || 'Unknown error'}`);
+        vscode.window.showErrorMessage(`${error.message}`);
         return false;
     }
 }
@@ -344,12 +337,6 @@ async function hideDecorations(editor: vscode.TextEditor): Promise<boolean> {
 
 
 async function updateMenuContext(document: vscode.TextDocument, currentState: boolean | undefined = undefined) {
-    if (currentState !== undefined) {
-        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !currentState);
-        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', currentState);
-        return;
-    }
-
     // Skip diff editor
     if (document.uri.scheme !== 'file') {
         vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
@@ -357,26 +344,31 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
         return;
     }
 
-    // check repository root
-    const repositoryRoot = await getGitRepository(document.fileName);
-    if (!repositoryRoot) {
-        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
-        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+    if (currentState !== undefined) {
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !currentState);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', currentState);
         return;
     }
 
-    // check file tracked
-    const fileTracked = await isFileTracked(repositoryRoot, document.fileName);
-    if (!fileTracked) {
+    try {
+        // check file tracked
+        const fileStatus = await getFileStatus(path.dirname(document.fileName), document.fileName);
+        const isTracked = fileStatus !== "untracked" && fileStatus !== "index_add";
+        if (!isTracked) {
+            vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
+            vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+            return;
+        }
+        // check file blame state
+        const fileBlameState = fileBlameStates.get(document.uri.toString());
+        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !fileBlameState);
+        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', fileBlameState);
+    } catch (error) {
+        // check git repository
         vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
         vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
-        return;
     }
 
-    // check file blame state
-    const fileBlameState = fileBlameStates.get(document.uri.toString());
-    vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !fileBlameState);
-    vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', fileBlameState);
 }
 
 
@@ -394,7 +386,7 @@ function fillTitles(blames: Blame[]): number {
 
         // calculate title width
         if (!textWidths.has(line.commit)) {
-            const { width, widths } = calculateTextWidth(line.title);
+            const { width, widths } = getTextWidth(line.title);
             textWidths.set(line.commit, { width, widths });
             if (width > maxWidth) {
                 maxWidth = width;
@@ -419,11 +411,6 @@ function fillTitles(blames: Blame[]): number {
 // ------------------------------------------------------------
 // utils
 // ------------------------------------------------------------
-
-async function isFileTracked(repositoryRoot: string, file: string): Promise<boolean> {
-    const fileStatus = await getFileStatus(repositoryRoot, file);
-    return fileStatus !== "untracked" && fileStatus !== "index_add";
-}
 
 function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
     switch (change.status) {
@@ -473,7 +460,7 @@ function toGitUri(uri: Uri, ref: string, options: { submoduleOf?: string, replac
 }
 
 
-function calculateTextWidth(text: string): { width: number, widths: number[] } {
+function getTextWidth(text: string): { width: number, widths: number[] } {
     let width = 0;
     const widths = [];
     for (const char of text) {
