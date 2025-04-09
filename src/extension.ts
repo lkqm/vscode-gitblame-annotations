@@ -201,13 +201,7 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         return true;
     }
 
-    if (decorations) {
-        decorations.decorationType?.dispose();
-        decorations.hoverProvider?.dispose();
-        decorations.decorationType = undefined;
-        decorations.decorationOptions = undefined;
-        decorations.hoverProvider = undefined;
-    } else {
+    if (!decorations) {
         decorations = {
             decorationType: undefined,
             decorationOptions: undefined,
@@ -268,17 +262,14 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         });
 
         // Decorations
-        if (decorations.decorationType) {
-            decorations.decorationType.dispose();
+        if (!decorations.decorationType) {
+            decorations.decorationType = vscode.window.createTextEditorDecorationType({});
         }
         decorations.decorationOptions = decorationOptions;
-        decorations.decorationType = vscode.window.createTextEditorDecorationType({});
         editor.setDecorations(decorations.decorationType, decorationOptions);
 
         // Hover provider
-        if (decorations.hoverProvider) {
-            decorations.hoverProvider.dispose();
-        }
+        decorations.hoverProvider?.dispose();
         decorations.hoverProvider = vscode.languages.registerHoverProvider(
             { scheme: 'file', pattern: document.fileName },
             {
