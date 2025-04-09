@@ -12,7 +12,6 @@ const fileDecorations = new Map<string, {
     hoverProvider: vscode.Disposable | undefined,
 }>();
 const MaxTitleWidth = 25;
-let previousThemeKind = vscode.window.activeColorTheme.kind;
 
 /**
  * 激活插件
@@ -161,24 +160,7 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    // Theme Change
-    const themeChangeSubscription = vscode.window.onDidChangeActiveColorTheme((e) => {
-        if (previousThemeKind !== e.kind) {
-            const currentIsDarkTheme = (e.kind === vscode.ColorThemeKind.Dark || e.kind === vscode.ColorThemeKind.HighContrast);
-            const previousIsDarkTheme = (previousThemeKind === vscode.ColorThemeKind.Dark || previousThemeKind === vscode.ColorThemeKind.HighContrast);
-            previousThemeKind = e.kind;
-            if (currentIsDarkTheme !== previousIsDarkTheme) {
-                for (const editor of vscode.window.visibleTextEditors) {
-                    const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
-                    if (fileBlameState) {
-                        showDecorations(editor, true);
-                    }
-                }
-            }
-        }
-    });
-
-    context.subscriptions.push(editorChangeSubscription, visibleEditorChangeSubscription, themeChangeSubscription, closeDocumentSubscription, saveDocumentSubscription);
+    context.subscriptions.push(editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription, saveDocumentSubscription);
 }
 
 /**
@@ -233,7 +215,8 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         const decorationOptions: vscode.DecorationOptions[] = [];
         const blamesMap = new Map<number, Blame>();
         blames.forEach((blame) => {
-            const color = getCommitColor(blame.commit);
+            const darkColor = getCommitColor(blame.commit, true);
+            const lightColor = getCommitColor(blame.commit, false);
             blame.lines.forEach((line) => {
                 const startIndex = line[0] - 1;
                 const endIndex = startIndex + (line[1] - 1);
@@ -253,7 +236,16 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
                                 width: `${maxWidth + 2}ch`,
                                 fontWeight: 'normal',
                                 fontStyle: 'normal',
-                                backgroundColor: color
+                            }, 
+                            light: {
+                                before: {
+                                    backgroundColor: lightColor
+                                }
+                            },
+                            dark: {
+                                before: {
+                                    backgroundColor: darkColor
+                                }
                             }
                         }
                     });
@@ -502,14 +494,13 @@ function trancateText(text: string, maxWidth: number, widths: number[]): string 
     return truncatedText;
 }
 
-function getCommitColor(commit: string): string {
+function getCommitColor(commit: string, isDarkOrLightTheme: boolean): string {
     let hash = 0;
     for (let i = 0; i < commit.length; i++) {
         hash = commit.charCodeAt(i) + ((hash << 5) - hash);
     }
-    const isDarkTheme = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark || vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrast;
     const h = hash % 360;
-    if (isDarkTheme) {
+    if (isDarkOrLightTheme) {
         return `hsl(${h}, 15%, 15%)`;
     } else {
         return `hsl(${h}, 20%, 95%)`;
