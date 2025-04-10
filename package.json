@@ -2,7 +2,7 @@
     "name": "gitblame-annotations",
     "displayName": "Git Blame Annotations",
     "description": "Display git blame in editor gutter like JetBrains IDEs",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "publisher": "lkqm",
     "repository": {
         "type": "git",
