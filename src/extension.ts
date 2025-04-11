@@ -215,8 +215,7 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         const decorationOptions: vscode.DecorationOptions[] = [];
         const blamesMap = new Map<number, Blame>();
         blames.forEach((blame) => {
-            const darkColor = getCommitColor(blame.commit, true);
-            const lightColor = getCommitColor(blame.commit, false);
+            const { lightColor, darkColor } = getCommitColor(blame.commit);
             blame.lines.forEach((line) => {
                 const startIndex = line[0] - 1;
                 const endIndex = startIndex + (line[1] - 1);
@@ -494,15 +493,13 @@ function trancateText(text: string, maxWidth: number, widths: number[]): string 
     return truncatedText;
 }
 
-function getCommitColor(commit: string, isDarkOrLightTheme: boolean): string {
+function getCommitColor(commit: string): { lightColor: string, darkColor: string } {
     let hash = 0;
     for (let i = 0; i < commit.length; i++) {
         hash = commit.charCodeAt(i) + ((hash << 5) - hash);
     }
     const h = hash % 360;
-    if (isDarkOrLightTheme) {
-        return `hsl(${h}, 15%, 15%)`;
-    } else {
-        return `hsl(${h}, 20%, 95%)`;
-    }
+    const darkColor = `hsl(${h}, 15%, 15%)`;
+    const lightColor = `hsl(${h}, 20%, 95%)`;
+    return { lightColor, darkColor };
 }
