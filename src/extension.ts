@@ -11,6 +11,7 @@ const fileDecorations = new Map<string, {
     decorationOptions: vscode.DecorationOptions[] | undefined,
     hoverProvider: vscode.Disposable | undefined,
 }>();
+const fileBlames = new Map<string, { blames: Blame[], lineBlames: Map<number, Blame> }>();
 const MaxTitleWidth = 25;
 
 /**
@@ -39,6 +40,7 @@ export function deactivate() {
     }
     fileDecorations.clear();
     fileBlameStates.clear();
+    fileBlames.clear();
 }
 
 
@@ -51,16 +53,19 @@ function registerCommands(context: vscode.ExtensionContext) {
     const toggleCommand = vscode.commands.registerCommand('git.blame.toggle', async () => {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-            const fileBlameState = fileBlameStates.get(editor.document.uri.toString()) || false;
+            const document = editor.document;
+            const documentUri = document.uri.toString();
+            const fileBlameState = fileBlameStates.get(documentUri) || false;
             if (!fileBlameState) {
-                const successed = await showDecorations(editor);
+                const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === documentUri);
+                const successed = await showDecorations(editors);
                 if (successed) {
-                    updateMenuContext(editor.document, true);
+                    updateMenuContext(document, true);
                 }
             } else {
-                const successed = await hideDecorations(editor);
+                const successed = await hideDecorations(document);
                 if (successed) {
-                    updateMenuContext(editor.document, false);
+                    updateMenuContext(document, false);
                 }
             }
         }
@@ -68,12 +73,13 @@ function registerCommands(context: vscode.ExtensionContext) {
 
     // Show blame annotations
     const showCommand = vscode.commands.registerCommand('git.blame.show', async (event?: any) => {
-        const editors = event && event.uri ? vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === event.uri.toString()) : [vscode.window.activeTextEditor];
-        for (const editor of editors) {
-            if (editor) {
-                const successed = await showDecorations(editor);
+        const documentUri = (event?.uri || vscode.window.activeTextEditor?.document.uri)?.toString() || "";
+        if (documentUri) {
+            const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === documentUri);
+            if (editors.length > 0) {
+                const successed = await showDecorations(editors);
                 if (successed) {
-                    updateMenuContext(editor.document, true);
+                    updateMenuContext(editors[0].document, true);
                 }
             }
         }
@@ -81,13 +87,11 @@ function registerCommands(context: vscode.ExtensionContext) {
 
     // Hide blame annotations
     const hideCommand = vscode.commands.registerCommand('git.blame.hide', async (event?: any) => {
-        const editors = event && event.uri ? vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === event.uri.toString()) : [vscode.window.activeTextEditor];
-        for (const editor of editors) {
-            if (editor) {
-                const successed = await hideDecorations(editor);
-                if (successed) {
-                    updateMenuContext(editor.document, false);
-                }
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const successed = await hideDecorations(editor.document);
+            if (successed) {
+                updateMenuContext(editor.document, false);
             }
         }
     });
@@ -128,7 +132,7 @@ function registerListeners(context: vscode.ExtensionContext) {
         for (const editor of editors) {
             const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
             if (fileBlameState) {
-                showDecorations(editor);
+                showDecorations([editor]);
             }
         }
     });
@@ -137,25 +141,39 @@ function registerListeners(context: vscode.ExtensionContext) {
     const closeDocumentSubscription = vscode.workspace.onDidCloseTextDocument(document => {
         const documentUri = document.uri.toString();
         fileBlameStates.delete(documentUri);
+        fileBlames.delete(documentUri);
         const decorations = fileDecorations.get(documentUri);
         if (decorations) {
+            fileDecorations.delete(documentUri);
             if (decorations.decorationType) {
                 decorations.decorationType.dispose();
             }
             if (decorations.hoverProvider) {
                 decorations.hoverProvider.dispose();
             }
-            fileDecorations.delete(documentUri);
         }
     });
 
     // Document Save
-    const saveDocumentSubscription = vscode.workspace.onDidSaveTextDocument(document => {
-        const editor = vscode.window.activeTextEditor;
-        if (editor && editor.document === document) {
-            const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
-            if (fileBlameState) {
-                showDecorations(editor, true);
+    const saveDocumentSubscription = vscode.workspace.onDidSaveTextDocument(async document => {
+        const documentUri = document.uri.toString();
+        const fileBlameState = fileBlameStates.get(documentUri);
+        if (fileBlameState) {
+            const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === documentUri);
+            if (editors.length > 0) {
+                await showDecorations(editors, true);
+            }
+        }
+    });
+
+    // Document change
+    const changeDocumentSubscription = vscode.workspace.onDidChangeTextDocument(async (event) => {
+        const documentUri = event.document.uri.toString();
+        const isNeedUpdate = event.contentChanges.length > 0 && fileBlameStates.get(documentUri);
+        if (isNeedUpdate) {
+            const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.toString() === documentUri);
+            if (editors.length > 0) {
+                await updateDecorationsOnChange(editors, event);
             }
         }
     });
@@ -166,8 +184,8 @@ function registerListeners(context: vscode.ExtensionContext) {
 /**
  * 显示装饰器
  */
-async function showDecorations(editor: vscode.TextEditor, reload: boolean = false): Promise<boolean> {
-    const document = editor.document;
+async function showDecorations(editors: vscode.TextEditor[], reload: boolean = false): Promise<boolean> {
+    const document = editors[0].document;
     const documentUri = document.uri.toString();
     let decorations = fileDecorations.get(documentUri);
 
@@ -178,7 +196,9 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
 
     // Use cache
     if (!reload && decorations && decorations.decorationType && decorations.decorationOptions) {
-        editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+        for (const editor of editors) {
+            editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+        }
         fileBlameStates.set(documentUri, true);
         return true;
     }
@@ -194,68 +214,21 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
 
     try {
         const blames = await getBlames(path.dirname(document.fileName), document.fileName);
-        const maxWidth = fillTitles(blames);
-        if (maxWidth <= 0) {
-            return false;
-        }
         for (let i = blames.length; i < document.lineCount; i++) {
-            blames.push({
-                line: i + 1,
-                commit: '0000000000000000000000000000000000000000',
-                author: '',
-                mail: '',
-                timestamp: 0,
-                summary: '',
-                commited: false,
-                title: '',
-            });
+            blames.push(buildUncommitBlame(i + 1));
         }
-
-        const decorationOptions: vscode.DecorationOptions[] = [];
-        const blamesMap = new Map<number, Blame>();
-        const colorsMap = new Map<string, { lightColor: string, darkColor: string }>();
-        blames.forEach((blame, index) => {
-            blamesMap.set(index, blame);
-            let color = colorsMap.get(blame.commit);
-            if (!color) {
-                color = getCommitColor(blame.commit);
-                colorsMap.set(blame.commit, color);
-            }
-            const range = new vscode.Range(
-                new vscode.Position(index, 0),
-                new vscode.Position(index, 0)
-            );
-            decorationOptions.push({
-                range,
-                renderOptions: {
-                    before: {
-                        contentText: `\u2007${blame.title}\u2007`,
-                        color: '#666666',
-                        margin: '0 1ch 0 0',
-                        width: `${maxWidth + 2}ch`,
-                        fontWeight: 'normal',
-                        fontStyle: 'normal',
-                    },
-                    light: {
-                        before: {
-                            backgroundColor: color.lightColor
-                        }
-                    },
-                    dark: {
-                        before: {
-                            backgroundColor: color.darkColor
-                        }
-                    }
-                }
-            });
-        });
+        const decorationOptions = buildDecorationOptions(blames);
 
         // Decorations
         if (!decorations.decorationType) {
             decorations.decorationType = vscode.window.createTextEditorDecorationType({});
         }
         decorations.decorationOptions = decorationOptions;
-        editor.setDecorations(decorations.decorationType, decorationOptions);
+        for (const editor of editors) {
+            editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+        }
+        const lineBlames = new Map(blames.map((blame, index) => [index, blame]));
+        fileBlames.set(documentUri, { blames, lineBlames });
 
         // Hover provider
         decorations.hoverProvider?.dispose();
@@ -266,8 +239,7 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
                     if (position.character > 0) {
                         return undefined;
                     }
-
-                    const blame = blamesMap.get(position.line);
+                    const blame = fileBlames.get(documentUri)?.lineBlames?.get(position.line);
                     if (blame && blame.commited) {
                         const date = new Date(blame.timestamp * 1000);
                         const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -293,14 +265,61 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
     }
 }
 
+function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
+    const maxWidth = fillTitles(blames);
+    if (maxWidth <= 0) {
+        return []
+    }
+
+    const decorationOptions: vscode.DecorationOptions[] = [];
+    const colorsMap = new Map<string, { lightColor: string, darkColor: string }>();
+    blames.forEach((blame, index) => {
+        let color = colorsMap.get(blame.commit);
+        if (!color) {
+            color = getCommitColor(blame.commit);
+            colorsMap.set(blame.commit, color);
+        }
+        const range = new vscode.Range(
+            new vscode.Position(index, 0),
+            new vscode.Position(index, 0)
+        );
+        decorationOptions.push({
+            range,
+            renderOptions: {
+                before: {
+                    contentText: `\u2007${blame.title}\u2007`,
+                    color: '#666666',
+                    margin: '0 1ch 0 0',
+                    width: `${maxWidth + 2}ch`,
+                    fontWeight: 'normal',
+                    fontStyle: 'normal',
+                },
+                light: {
+                    before: {
+                        backgroundColor: color.lightColor
+                    }
+                },
+                dark: {
+                    before: {
+                        backgroundColor: color.darkColor
+                    }
+                }
+            }
+        });
+    });
+    return decorationOptions;
+}
+
 /**
  * 隐藏装饰器
  */
-async function hideDecorations(editor: vscode.TextEditor): Promise<boolean> {
-    const documentUri = editor.document.uri.toString();
+async function hideDecorations(document: vscode.TextDocument): Promise<boolean> {
+    const documentUri = document.uri.toString();
     fileBlameStates.set(documentUri, false);
+    fileBlames.delete(documentUri);
     let decorations = fileDecorations.get(documentUri);
     if (decorations) {
+        fileDecorations.delete(documentUri);
         if (decorations.decorationType) {
             decorations.decorationType.dispose();
             decorations.decorationType = undefined;
@@ -313,6 +332,122 @@ async function hideDecorations(editor: vscode.TextEditor): Promise<boolean> {
         return true;
     }
     return false;
+}
+
+/**
+ * 更新装饰器
+ */
+async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vscode.TextDocumentChangeEvent) {
+    const documentUri = editors[0].document.uri.toString();
+    const decorations = fileDecorations.get(documentUri);
+    if (!decorations || !decorations.decorationType) {
+        return;
+    }
+    const blames = fileBlames.get(documentUri)?.blames;
+    if (!blames) {
+        return;
+    }
+
+    // resolve changes
+    let shouldUpdate = false;
+    for (const change of event.contentChanges) {
+        const addedLines = [];
+        const deletedLines = [];
+        const modifiedLines = [];
+        const changeText = change.text;
+        const startLine = change.range.start.line;
+        const endLine = change.range.end.line;
+        const startLineCharacter = change.range.start.character;
+        if (changeText.length === 0) {
+            // delete characters
+            const diffLine = endLine - startLine;
+            if (diffLine === 1) {
+                deletedLines.push(startLine + 1);
+            } else if (diffLine > 1) {
+                const start = startLineCharacter > 0 ? startLine + 1 : startLine;
+                const end = start + diffLine - 1;
+                for (let i = start; i <= end; i++) {
+                    deletedLines.push(i);
+                }
+            } else if (diffLine === 0) {
+                modifiedLines.push(startLine);
+            }
+        } else if (changeText === '\n' || changeText == '\r\n') {
+            // add a new line
+            addedLines.push(startLineCharacter > 0 ? startLine + 1 : startLine);
+        } else {
+            // add or modify characters
+            const crossLines = endLine - startLine + 1;
+            const textLines = changeText.split(/\r?\n/).length;
+            const diff = textLines - crossLines;
+            if (diff > 0) {
+                // modify lines
+                for (let i = startLine; i <= endLine; i++) {
+                    modifiedLines.push(i);
+                }
+                // add lines
+                const start = endLine + 1;
+                const end = endLine + diff;
+                for (let i = start; i <= end; i++) {
+                    addedLines.push(i);
+                }
+            } else if (diff < 0) {
+                // modify lines
+                for (let i = startLine; i <= endLine + diff; i++) {
+                    modifiedLines.push(i);
+                }
+                // delete lines
+                const start = endLine + diff + 1;
+                const end = endLine;
+                for (let i = start; i <= end; i++) {
+                    deletedLines.push(i);
+                }
+            } else if (diff === 0) {
+                // modify lines
+                for (let i = startLine; i <= endLine; i++) {
+                    modifiedLines.push(i);
+                }
+            }
+        }
+
+        // update blames
+        if (addedLines.length === 0 && deletedLines.length === 0 && modifiedLines.length === 0) {
+            continue;
+        }
+        if (modifiedLines.length > 0) {
+            for (let i = 0; i < modifiedLines.length; i++) {
+                if (blames[modifiedLines[i]].commited) {
+                    blames[modifiedLines[i]].commit = '0000000000000000000000000000000000000000';
+                    blames[modifiedLines[i]].commited = false;
+                    shouldUpdate = true;
+                }
+            }
+        }
+        if (deletedLines.length > 0) {
+            shouldUpdate = true;
+            for (let i = deletedLines.length - 1; i >= 0; i--) {
+                blames.splice(deletedLines[i], 1);
+            }
+        }
+        if (addedLines.length > 0) {
+            shouldUpdate = true;
+            for (let i = 0; i < addedLines.length; i++) {
+                blames.splice(addedLines[i], 0, buildUncommitBlame(addedLines[i]+1));
+            }
+        }
+    }
+
+    // update decorations
+    if (!shouldUpdate) {
+        return;
+    }
+    const decorationOptions = buildDecorationOptions(blames);
+    decorations.decorationOptions = decorationOptions;
+    for (const editor of editors) {
+        editor.setDecorations(decorations.decorationType, decorationOptions);
+    }
+    const lineBlames = new Map(blames.map((blame, index) => [index, blame]));
+    fileBlames.set(documentUri, { blames, lineBlames });
 }
 
 
@@ -500,4 +635,17 @@ function getCommitColor(commit: string): { lightColor: string, darkColor: string
     const darkColor = `hsl(${h}, 15%, 15%)`;
     const lightColor = `hsl(${h}, 20%, 95%)`;
     return { lightColor, darkColor };
+}
+
+function buildUncommitBlame(line: number): Blame {
+    return {
+        line: line,
+        commit: '0000000000000000000000000000000000000000',
+        author: '',
+        mail: '',
+        timestamp: 0,
+        summary: '',
+        commited: false,
+        title: '',
+    }
 }
