@@ -3,6 +3,17 @@ import path from 'path';
 import { Uri } from 'vscode';
 
 export interface Blame {
+    line: number;
+    author: string;
+    mail: string;
+    commit: string;
+    summary: string;
+    timestamp: number;
+    commited: boolean;
+    title: string;
+}
+
+export interface CommitBlame {
     lines: [number, number][];
     author: string;
     mail: string;
@@ -70,7 +81,8 @@ export async function getGitRepository(filePath: string): Promise<string> {
  */
 export async function getBlames(repositoryRoot: string, file: string): Promise<Blame[]> {
     const blame = await exec(repositoryRoot, ['blame', '--incremental', file]);
-    return parseBlames(blame)
+    const {totalLines, blames} = parseBlames(blame);
+    return toBlames(totalLines, blames);
 }
 
 /**
@@ -132,11 +144,11 @@ export async function getFileStatus(repositoryRoot: string, filename: string): P
  * 解析增量 blame 信息
  */
 
-function parseBlames(blame: string): Blame[] {
-    const blames: Blame[] = [];
+function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]} {
+    const blames: CommitBlame[] = [];
     const lines = blame.split('\n');
 
-    let currentBlock: Blame = {
+    let currentBlock: CommitBlame = {
         lines: [],
         author: '',
         mail: '',
@@ -146,8 +158,9 @@ function parseBlames(blame: string): Blame[] {
         commited: false,
         title: '',
     }
-    const commitToBlock = new Map<string, Blame>();
+    const commitToBlock = new Map<string, CommitBlame>();
     let newBlock = true;
+    let totalLines = 0;
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (newBlock) {
@@ -157,12 +170,14 @@ function parseBlames(blame: string): Blame[] {
                 continue;
             }
             const commitBlock = commitToBlock.get(commit);
+            const lineNumber = parseInt(parts[2]);
+            const lineCount = parseInt(parts[3]);
             if (commitBlock) {
-                commitBlock.lines.push([parseInt(parts[2]), parseInt(parts[3])]);
+                commitBlock.lines.push([lineNumber, lineCount]);
                 currentBlock = commitBlock;
             } else {
                 currentBlock = {
-                    lines: [[parseInt(parts[2]), parseInt(parts[3])]],
+                    lines: [[lineNumber, lineCount]],
                     commit: commit,
                     author: '',
                     mail: '',
@@ -175,6 +190,11 @@ function parseBlames(blame: string): Blame[] {
                 commitToBlock.set(commit, currentBlock);
             }
             newBlock = false;
+            // calculate total lines
+            const endLineNumber = lineNumber + lineCount - 1;
+            if (endLineNumber > totalLines) {
+                totalLines = endLineNumber;
+            }
         } else if (line.startsWith('author ')) {
             currentBlock.author = line.substring(7);
         } else if (line.startsWith('author-mail ')) {
@@ -188,7 +208,7 @@ function parseBlames(blame: string): Blame[] {
             newBlock = true;
         }
     }
-    return blames;
+    return {totalLines, blames};
 }
 
 /**
@@ -253,4 +273,20 @@ function parseChanges(repositoryRoot: string, raw: string): Change[] {
     }
 
     return result;
+}
+
+function toBlames(totalLines: number, commitBlames: CommitBlame[]): Blame[] {
+    const blames: Blame[] = new Array(totalLines);
+    commitBlames.forEach(({ lines, ...commitInfo }) => {
+        lines.forEach(([start, length]) => {
+            const end = start + length - 1;
+            for (let i = start - 1; i < end; i++) {
+                blames[i] = {
+                    line: i + 1,
+                    ...commitInfo
+                };
+            }
+        });
+    });
+    return blames;
 }

@@ -198,10 +198,9 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
         if (maxWidth <= 0) {
             return false;
         }
-        const maxLine = Math.max(...blames.flatMap(blame => blame.lines).map(line => line[0] + line[1] - 1));
-        if (maxLine < document.lineCount) {
+        for (let i = blames.length; i < document.lineCount; i++) {
             blames.push({
-                lines: [[maxLine + 1, document.lineCount - maxLine]],
+                line: i + 1,
                 commit: '0000000000000000000000000000000000000000',
                 author: '',
                 mail: '',
@@ -214,42 +213,41 @@ async function showDecorations(editor: vscode.TextEditor, reload: boolean = fals
 
         const decorationOptions: vscode.DecorationOptions[] = [];
         const blamesMap = new Map<number, Blame>();
-        blames.forEach((blame) => {
-            const { lightColor, darkColor } = getCommitColor(blame.commit);
-            blame.lines.forEach((line) => {
-                const startIndex = line[0] - 1;
-                const endIndex = startIndex + (line[1] - 1);
-                for (let i = startIndex; i <= endIndex; i++) {
-                    blamesMap.set(i, blame);
-                    const range = new vscode.Range(
-                        new vscode.Position(i, 0),
-                        new vscode.Position(i, 0)
-                    );
-                    decorationOptions.push({
-                        range,
-                        renderOptions: {
-                            before: {
-                                contentText: `\u2007${blame.title}\u2007`,
-                                color: '#666666',
-                                margin: '0 1ch 0 0',
-                                width: `${maxWidth + 2}ch`,
-                                fontWeight: 'normal',
-                                fontStyle: 'normal',
-                            }, 
-                            light: {
-                                before: {
-                                    backgroundColor: lightColor
-                                }
-                            },
-                            dark: {
-                                before: {
-                                    backgroundColor: darkColor
-                                }
-                            }
+        const colorsMap = new Map<string, { lightColor: string, darkColor: string }>();
+        blames.forEach((blame, index) => {
+            blamesMap.set(index, blame);
+            let color = colorsMap.get(blame.commit);
+            if (!color) {
+                color = getCommitColor(blame.commit);
+                colorsMap.set(blame.commit, color);
+            }
+            const range = new vscode.Range(
+                new vscode.Position(index, 0),
+                new vscode.Position(index, 0)
+            );
+            decorationOptions.push({
+                range,
+                renderOptions: {
+                    before: {
+                        contentText: `\u2007${blame.title}\u2007`,
+                        color: '#666666',
+                        margin: '0 1ch 0 0',
+                        width: `${maxWidth + 2}ch`,
+                        fontWeight: 'normal',
+                        fontStyle: 'normal',
+                    },
+                    light: {
+                        before: {
+                            backgroundColor: color.lightColor
                         }
-                    });
+                    },
+                    dark: {
+                        before: {
+                            backgroundColor: color.darkColor
+                        }
+                    }
                 }
-            })
+            });
         });
 
         // Decorations
