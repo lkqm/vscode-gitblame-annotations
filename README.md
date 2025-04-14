@@ -14,7 +14,7 @@ Display git blame in editor gutter like JetBrains IDEs.
 ## Usage
 1. Install `Git Blame Annotations` extension.
 2. Right-click menu on line numbers.
-3. Click "Annotate with GitBlame" or "Close Annotations".
+3. Click "Annotate with Git Blame" or "Close Annotations".
 
 ## Commands
 - `git.blame.toggle` - Toggle Annotations 

@@ -34,9 +34,9 @@ export interface Change {
 /**
  * 执行git命令
  */
-async function exec(repositoryRoot: string, args: string[]) {
+async function exec(workDir: string, args: string[]) {
     return new Promise<string>((resolve, reject) => {
-        const git = child_process.spawn('git', args, { cwd: repositoryRoot });
+        const git = child_process.spawn('git', args, { cwd: workDir });
         let stdout = '';
         let stderr = '';
 
@@ -79,8 +79,8 @@ export async function getGitRepository(filePath: string): Promise<string> {
 /**
  * 获取文件的 blame 信息
  */
-export async function getBlames(repositoryRoot: string, file: string): Promise<Blame[]> {
-    const blame = await exec(repositoryRoot, ['blame', '--incremental', file]);
+export async function getBlames(workDir: string, file: string): Promise<Blame[]> {
+    const blame = await exec(workDir, ['blame', '--incremental', file]);
     const {totalLines, blames} = parseBlames(blame);
     return toBlames(totalLines, blames);
 }
@@ -88,22 +88,22 @@ export async function getBlames(repositoryRoot: string, file: string): Promise<B
 /**
  * 获取变更信息
  */
-export async function getChanges(repositoryRoot: string, commitId1: string, commitId2?: string): Promise<Change[]> {
+export async function getChanges(workDir: string, commitId1: string, commitId2?: string): Promise<Change[]> {
     const args = ["diff-tree", "-r", "--name-status", "-z", "--diff-filter=ADMR", commitId1]
     if (commitId2) {
         args.push(commitId2);
     }
-    const changes = await exec(repositoryRoot, args);
-    return parseChanges(repositoryRoot, changes)
+    const changes = await exec(workDir, args);
+    return parseChanges(workDir, changes)
 }
 
 /**
  * 获取父提交
  */
-export async function getParentCommitId(repositoryRoot: string, commitId: string): Promise<string> {
+export async function getParentCommitId(workDir: string, commitId: string): Promise<string> {
     try {
         const revId = `${commitId}^`;
-        const commit = await exec(repositoryRoot, ["rev-parse", revId]);
+        const commit = await exec(workDir, ["rev-parse", revId]);
         let parentId = commit.trim();
         if (parentId === commitId) {
             parentId = "";
@@ -117,16 +117,16 @@ export async function getParentCommitId(repositoryRoot: string, commitId: string
 /**
  * 获取空树
  */
-export async function getEmptyTree(repositoryRoot: string): Promise<string> {
-    const result = await exec(repositoryRoot, ['hash-object', '-t', 'tree', '/dev/null']);
+export async function getEmptyTree(workDir: string): Promise<string> {
+    const result = await exec(workDir, ['hash-object', '-t', 'tree', '/dev/null']);
     return result.trim();
 }
 
 /**
  * 获取文件状态
  */
-export async function getFileStatus(repositoryRoot: string, filename: string): Promise<string> {
-    const result = await exec(repositoryRoot, ['status', '--short', filename]);
+export async function getFileStatus(workDir: string, filename: string): Promise<string> {
+    const result = await exec(workDir, ['status', '--short', filename]);
     if (!result) {
         return "tracked";
     }
@@ -214,7 +214,7 @@ function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]}
 /**
  * 解析diff-tree变更信息
  */
-function parseChanges(repositoryRoot: string, raw: string): Change[] {
+function parseChanges(workDir: string, raw: string): Change[] {
     let index = 0;
     const result: Change[] = [];
     const segments = raw.trim().split('\x00').filter(s => s);
@@ -228,7 +228,7 @@ function parseChanges(repositoryRoot: string, raw: string): Change[] {
             break;
         }
 
-        const originalUri = Uri.file(path.isAbsolute(resourcePath) ? resourcePath : path.join(repositoryRoot, resourcePath));
+        const originalUri = Uri.file(path.isAbsolute(resourcePath) ? resourcePath : path.join(workDir, resourcePath));
 
         let uri = originalUri;
         let renameUri = originalUri;
@@ -261,7 +261,7 @@ function parseChanges(repositoryRoot: string, raw: string): Change[] {
                 }
 
                 status = "index_renamed";
-                uri = renameUri = Uri.file(path.isAbsolute(newPath) ? newPath : path.join(repositoryRoot, newPath));
+                uri = renameUri = Uri.file(path.isAbsolute(newPath) ? newPath : path.join(workDir, newPath));
                 break;
             }
             default:
