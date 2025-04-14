@@ -358,6 +358,7 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
         const startLine = change.range.start.line;
         const endLine = change.range.end.line;
         const startLineCharacter = change.range.start.character;
+
         if (changeText.length === 0) {
             // delete characters
             const diffLine = endLine - startLine;
@@ -372,15 +373,15 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
             } else if (diffLine === 0) {
                 modifiedLines.push(startLine);
             }
-        } else if (changeText === '\n' || changeText == '\r\n') {
-            // add a new line
-            addedLines.push(startLineCharacter > 0 ? startLine + 1 : startLine);
         } else {
             // add or modify characters
             const crossLines = endLine - startLine + 1;
             const textLines = changeText.split(/\r?\n/).length;
             const diff = textLines - crossLines;
-            if (diff > 0) {
+            if (textLines === 2 && (changeText.startsWith('\n') || changeText.startsWith('\r\n'))) {
+                // add a new line
+                addedLines.push(startLineCharacter > 0 ? startLine + 1 : startLine);
+            } else if (diff > 0) {
                 // modify lines
                 for (let i = startLine; i <= endLine; i++) {
                     modifiedLines.push(i);
@@ -432,7 +433,7 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
         if (addedLines.length > 0) {
             shouldUpdate = true;
             for (let i = 0; i < addedLines.length; i++) {
-                blames.splice(addedLines[i], 0, buildUncommitBlame(addedLines[i]+1));
+                blames.splice(addedLines[i], 0, buildUncommitBlame(addedLines[i] + 1));
             }
         }
     }
