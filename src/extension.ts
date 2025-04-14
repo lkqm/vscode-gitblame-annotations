@@ -374,39 +374,42 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
                 modifiedLines.push(startLine);
             }
         } else {
-            // add or modify characters
-            const crossLines = endLine - startLine + 1;
-            const textLines = changeText.split(/\r?\n/).length;
-            const diff = textLines - crossLines;
-            if (textLines === 2 && (changeText.startsWith('\n') || changeText.startsWith('\r\n'))) {
+            const trimedChangeText = changeText.replace(/ +$/, '');
+            if (trimedChangeText === '\n' || trimedChangeText === '\r\n') {
                 // add a new line
                 addedLines.push(startLineCharacter > 0 ? startLine + 1 : startLine);
-            } else if (diff > 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine; i++) {
-                    modifiedLines.push(i);
-                }
-                // add lines
-                const start = endLine + 1;
-                const end = endLine + diff;
-                for (let i = start; i <= end; i++) {
-                    addedLines.push(i);
-                }
-            } else if (diff < 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine + diff; i++) {
-                    modifiedLines.push(i);
-                }
-                // delete lines
-                const start = endLine + diff + 1;
-                const end = endLine;
-                for (let i = start; i <= end; i++) {
-                    deletedLines.push(i);
-                }
-            } else if (diff === 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine; i++) {
-                    modifiedLines.push(i);
+            } else {
+                // add or modify characters
+                const crossLines = endLine - startLine + 1;
+                const textLines = changeText.split(/\r?\n/).length;
+                const diff = textLines - crossLines;
+                if (diff > 0) {
+                    // modify lines
+                    for (let i = startLine; i <= endLine; i++) {
+                        modifiedLines.push(i);
+                    }
+                    // add lines
+                    const start = endLine + 1;
+                    const end = endLine + diff;
+                    for (let i = start; i <= end; i++) {
+                        addedLines.push(i);
+                    }
+                } else if (diff < 0) {
+                    // modify lines
+                    for (let i = startLine; i <= endLine + diff; i++) {
+                        modifiedLines.push(i);
+                    }
+                    // delete lines
+                    const start = endLine + diff + 1;
+                    const end = endLine;
+                    for (let i = start; i <= end; i++) {
+                        deletedLines.push(i);
+                    }
+                } else if (diff === 0) {
+                    // modify lines
+                    for (let i = startLine; i <= endLine; i++) {
+                        modifiedLines.push(i);
+                    }
                 }
             }
         }
