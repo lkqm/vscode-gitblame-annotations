@@ -380,7 +380,8 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
     blames.forEach((blame, index) => {
         let color = colorsMap.get(blame.commit);
         if (!color) {
-            color = getCommitColor(blame.commit);
+            // Pass timestamp to getCommitColor
+            color = getCommitColor(blame.commit, blame.timestamp);
             colorsMap.set(blame.commit, color);
         }
         const range = new vscode.Range(
@@ -554,14 +555,55 @@ function trancateText(text: string, maxWidth: number, widths: number[]): string 
     return truncatedText;
 }
 
-function getCommitColor(commit: string): { lightColor: string, darkColor: string } {
+function getCommitColor(commit: string, timestamp: number): { lightColor: string, darkColor: string } {
     let hash = 0;
     for (let i = 0; i < commit.length; i++) {
         hash = commit.charCodeAt(i) + ((hash << 5) - hash);
     }
     const h = hash % 360;
-    const darkColor = `hsl(${h}, 15%, 15%)`;
-    const lightColor = `hsl(${h}, 20%, 95%)`;
+
+    const SECONDS_IN_A_DAY = 86400; // 24 * 60 * 60
+    const NOW_IN_SECONDS = Date.now() / 1000;
+    const commitAgeInDays = (NOW_IN_SECONDS - timestamp) / SECONDS_IN_A_DAY;
+
+    const RECENT_DAYS = 7;
+    const OLD_DAYS = 90;
+    const MAX_AGE_DAYS = 180; // Maximum age for interpolation
+
+    let darkSaturation, lightSaturation;
+    let darkLightness = 15; // Default lightness for dark theme
+    let lightLightness = 95; // Default lightness for light theme
+
+    if (commitAgeInDays <= RECENT_DAYS) {
+        darkSaturation = 70; // Higher saturation for recent commits (dark theme)
+        lightSaturation = 80; // Higher saturation for recent commits (light theme)
+        // Optional: Adjust lightness for very recent items if they need to pop more
+        // darkLightness = 20;
+        // lightLightness = 90;
+    } else if (commitAgeInDays >= OLD_DAYS) {
+        darkSaturation = 15; // Lower saturation for old commits (dark theme)
+        lightSaturation = 20; // Lower saturation for old commits (light theme)
+    } else {
+        // Interpolate saturation between RECENT_DAYS and OLD_DAYS
+        // Calculate the position in the interpolation range (0 for RECENT_DAYS, 1 for OLD_DAYS)
+        const factor = (commitAgeInDays - RECENT_DAYS) / (OLD_DAYS - RECENT_DAYS);
+        darkSaturation = 70 - (70 - 15) * factor; // Interpolate from 70 down to 15
+        lightSaturation = 80 - (80 - 20) * factor; // Interpolate from 80 down to 20
+    }
+
+    // For commits older than MAX_AGE_DAYS, clamp to the 'old' style
+    if (commitAgeInDays > MAX_AGE_DAYS) {
+        darkSaturation = 15;
+        lightSaturation = 20;
+    }
+
+    // Ensure saturation values are within the valid HSL range (0-100)
+    darkSaturation = Math.max(0, Math.min(100, darkSaturation));
+    lightSaturation = Math.max(0, Math.min(100, lightSaturation));
+
+    const darkColor = `hsl(${h}, ${darkSaturation.toFixed(0)}%, ${darkLightness}%)`;
+    const lightColor = `hsl(${h}, ${lightSaturation.toFixed(0)}%, ${lightLightness}%)`;
+
     return { lightColor, darkColor };
 }
 

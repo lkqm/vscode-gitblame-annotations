@@ -45,7 +45,15 @@
                     "when": "gitblame.hideMenuState"
                 }
             ]
-        }
+        },
+        "keybindings": [
+            {
+                "command": "git.blame.toggle",
+                "key": "ctrl+alt+b",
+                "mac": "cmd+alt+b",
+                "when": "editorTextFocus"
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
