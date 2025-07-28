@@ -374,6 +374,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
     if (maxWidth <= 0) {
         return []
     }
+    const sameCommit = new Set(blames.filter(b => b.commited).map(b => b.commit)).size === 1;
 
     const decorationOptions: vscode.DecorationOptions[] = [];
     const colorsMap = new Map<string, { lightColor: string, darkColor: string }>();
@@ -388,7 +389,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
             new vscode.Position(index, 0),
             new vscode.Position(index, 0)
         );
-        decorationOptions.push({
+        const option = {
             range,
             renderOptions: {
                 before: {
@@ -410,7 +411,12 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
                     }
                 }
             }
-        });
+        };
+        decorationOptions.push(option);
+        if (sameCommit || !blame.commited) {
+            option.renderOptions.light.before.backgroundColor = 'transparent'
+            option.renderOptions.dark.before.backgroundColor = 'transparent'
+        }
     });
     return decorationOptions;
 }
