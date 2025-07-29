@@ -2,8 +2,9 @@
     "name": "gitblame-annotations",
     "displayName": "Git Blame Annotations",
     "description": "Display git blame in editor gutter like JetBrains IDEs",
-    "version": "0.1.1",
+    "version": "0.2.1",
     "publisher": "lkqm",
+    "license": "MIT",
     "repository": {
         "type": "git",
         "url": "https://github.com/lkqm/vscode-gitblame-annotations.git"
@@ -23,7 +24,7 @@
         "commands": [
             {
                 "command": "git.blame.toggle",
-                "title": "Git: Toggle Annotations"
+                "title": "Toggle Annotations"
             },
             {
                 "command": "git.blame.show",
@@ -52,6 +53,11 @@
                 "key": "ctrl+alt+b",
                 "mac": "cmd+alt+b",
                 "when": "editorTextFocus"
+            },
+            {
+                "command": "git.blame.hide",
+                "key": "escape",
+                "when": "editorTextFocus && gitblame.hideMenuState"
             }
         ]
     },

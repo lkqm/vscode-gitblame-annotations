@@ -7,8 +7,8 @@ import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getG
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
 const fileDecorations = new Map<string, {
-    decorationType: vscode.TextEditorDecorationType | undefined,
-    decorationOptions: vscode.DecorationOptions[] | undefined,
+    decorationTypes: vscode.TextEditorDecorationType[] | undefined,
+    decorationOptions: vscode.DecorationOptions[][] | undefined,
     hoverProvider: vscode.Disposable | undefined,
     blames: Blame[] | undefined,
     lineBlames: Map<number, Blame> | undefined,
@@ -32,7 +32,7 @@ export function activate(context: vscode.ExtensionContext) {
  */
 export function deactivate() {
     for (const [_, decorations] of fileDecorations) {
-        decorations.decorationType?.dispose();
+        decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
     }
     fileDecorations.clear();
@@ -140,7 +140,7 @@ function registerListeners(context: vscode.ExtensionContext) {
         const decorations = fileDecorations.get(documentUri);
         if (decorations) {
             fileDecorations.delete(documentUri);
-            decorations.decorationType?.dispose();
+            decorations.decorationTypes?.forEach(type => type.dispose());
             decorations.hoverProvider?.dispose();
         }
     });
@@ -186,9 +186,12 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
     }
 
     // Use cache
-    if (!reload && decorations && decorations.decorationType && decorations.decorationOptions) {
+    if (!reload && decorations && decorations.decorationTypes && decorations.decorationOptions) {
         for (const editor of editors) {
-            editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+            const decorationNum = Math.min(decorations.decorationTypes.length, decorations.decorationOptions.length)
+            for (let i = 0; i < decorationNum; i++) {
+                editor.setDecorations(decorations.decorationTypes[i], decorations.decorationOptions[i]);
+            }
         }
         fileBlameStates.set(documentUri, true);
         return true;
@@ -196,7 +199,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
 
     if (!decorations) {
         decorations = {
-            decorationType: undefined,
+            decorationTypes: undefined,
             decorationOptions: undefined,
             hoverProvider: undefined,
             blames: undefined,
@@ -213,12 +216,18 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         }
 
         // Decorations
-        if (!decorations.decorationType) {
-            decorations.decorationType = vscode.window.createTextEditorDecorationType({});
+        if (!decorations.decorationTypes) {
+            decorations.decorationTypes = [];
         }
         decorations.decorationOptions = buildDecorationOptions(blames);
         for (const editor of editors) {
-            editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+            const decorationNum = decorations.decorationOptions.length;
+            for (let i = 0; i < decorationNum; i++) {
+                if (i >= decorations.decorationTypes.length) {
+                    decorations.decorationTypes.push(vscode.window.createTextEditorDecorationType({}));
+                }
+                editor.setDecorations(decorations.decorationTypes[i], decorations.decorationOptions[i]);
+            }
         }
         decorations.blames = blames;
         decorations.lineBlames = new Map(blames.map((blame, index) => [index, blame]));
@@ -267,7 +276,7 @@ async function hideDecorations(document: vscode.TextDocument): Promise<boolean> 
     let decorations = fileDecorations.get(documentUri);
     if (decorations) {
         fileDecorations.delete(documentUri);
-        decorations.decorationType?.dispose();
+        decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
         return true;
     }
@@ -280,7 +289,7 @@ async function hideDecorations(document: vscode.TextDocument): Promise<boolean> 
 async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vscode.TextDocumentChangeEvent) {
     const documentUri = editors[0].document.uri.toString();
     const decorations = fileDecorations.get(documentUri);
-    if (!decorations || !decorations.decorationType) {
+    if (!decorations || !decorations.decorationTypes) {
         return;
     }
     const blames = fileDecorations.get(documentUri)?.blames;
@@ -324,7 +333,13 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
     // update decorations
     decorations.decorationOptions = buildDecorationOptions(blames);
     for (const editor of editors) {
-        editor.setDecorations(decorations.decorationType, decorations.decorationOptions);
+        const decorationNum = decorations.decorationOptions.length;
+        for (let i = 0; i < decorationNum; i++) {
+            if (i >= decorations.decorationTypes.length) {
+                decorations.decorationTypes.push(vscode.window.createTextEditorDecorationType({}));
+            }
+            editor.setDecorations(decorations.decorationTypes[i], decorations.decorationOptions[i]);
+        }
     }
     decorations.blames = blames;
     decorations.lineBlames = new Map(blames.map((blame, index) => [index, blame]));
@@ -369,19 +384,19 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
 
 }
 
-function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
+function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     const maxWidth = fillTitles(blames);
     if (maxWidth <= 0) {
         return []
     }
-    const sameCommit = new Set(blames.filter(b => b.commited).map(b => b.commit)).size === 1;
+    const singleCommit = new Set(blames.filter(b => b.commited).map(b => b.commit)).size === 1;
 
     const decorationOptions: vscode.DecorationOptions[] = [];
+    const decorationOptionsHeatmap: vscode.DecorationOptions[] = [];
     const colorsMap = new Map<string, { lightColor: string, darkColor: string }>();
     blames.forEach((blame, index) => {
         let color = colorsMap.get(blame.commit);
         if (!color) {
-            // Pass timestamp to getCommitColor
             color = getCommitColor(blame.commit, blame.timestamp);
             colorsMap.set(blame.commit, color);
         }
@@ -395,10 +410,21 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
                     color: '#666666',
-                    margin: '0 1ch 0 0',
                     width: `${maxWidth + 2}ch`,
                     fontWeight: 'normal',
                     fontStyle: 'normal',
+                }
+            }
+        };
+        decorationOptions.push(option);
+
+        const optionHeatmap = {
+            range,
+            renderOptions: {
+                before: {
+                    contentText: '\u2007',
+                    width: '2px',
+                    margin: '0 25px 0 0',
                 },
                 light: {
                     before: {
@@ -412,23 +438,36 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[] {
                 }
             }
         };
-        decorationOptions.push(option);
-        if (sameCommit || !blame.commited) {
-            option.renderOptions.light.before.backgroundColor = 'transparent'
-            option.renderOptions.dark.before.backgroundColor = 'transparent'
+        if (singleCommit || !blame.commited) {
+            optionHeatmap.renderOptions.light.before.backgroundColor = 'transparent';
+            optionHeatmap.renderOptions.dark.before.backgroundColor = 'transparent';
         }
+        decorationOptionsHeatmap.push(optionHeatmap);
     });
-    return decorationOptions;
+
+    return [decorationOptions, decorationOptionsHeatmap];
 }
 
 
 function fillTitles(blames: Blame[]): number {
     let maxWidth = 0;
+    
+    // calculate date width
+    const lineDates = new Map<number, string>();
+    const maxDateWidth = blames.reduce((maxWidth, line) => {
+        if (!line.commited) {
+            return maxWidth;
+        }
+        const date = new Date(line.timestamp * 1000);
+        const dateText = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+        lineDates.set(line.line, dateText);
+        return Math.max(maxWidth, dateText.length);
+    }, 8);
+
     const textWidths = new Map<string, { width: number, widths: number[] }>();
     blames.forEach(line => {
         if (line.commited) {
-            const date = new Date(line.timestamp * 1000);
-            const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+            const dateText = lineDates.get(line.line)?.padEnd(maxDateWidth, '\u2007');
             line.title = `${dateText} ${line.author}`;
         } else {
             line.title = '';
@@ -562,54 +601,22 @@ function trancateText(text: string, maxWidth: number, widths: number[]): string 
 }
 
 function getCommitColor(commit: string, timestamp: number): { lightColor: string, darkColor: string } {
+    // hue
     let hash = 0;
     for (let i = 0; i < commit.length; i++) {
         hash = commit.charCodeAt(i) + ((hash << 5) - hash);
     }
-    const h = hash % 360;
+    const h = (hash * 137.508) % 360;
 
-    const SECONDS_IN_A_DAY = 86400; // 24 * 60 * 60
-    const NOW_IN_SECONDS = Date.now() / 1000;
-    const commitAgeInDays = (NOW_IN_SECONDS - timestamp) / SECONDS_IN_A_DAY;
+    // saturation
+    const minSaturation = 35, maxSaturation = 90, decayDays = 20;
+    let daysAgo = Math.floor((Date.now() / 1000 - timestamp) / (24 * 60 * 60));
+    daysAgo = Math.max(daysAgo, 0);
+    const decay = Math.exp(-daysAgo / 20);
+    const saturation = Math.round(minSaturation + (maxSaturation - minSaturation) * decay);
 
-    const RECENT_DAYS = 7;
-    const OLD_DAYS = 90;
-    const MAX_AGE_DAYS = 180; // Maximum age for interpolation
-
-    let darkSaturation, lightSaturation;
-    let darkLightness = 15; // Default lightness for dark theme
-    let lightLightness = 95; // Default lightness for light theme
-
-    if (commitAgeInDays <= RECENT_DAYS) {
-        darkSaturation = 70; // Higher saturation for recent commits (dark theme)
-        lightSaturation = 80; // Higher saturation for recent commits (light theme)
-        // Optional: Adjust lightness for very recent items if they need to pop more
-        // darkLightness = 20;
-        // lightLightness = 90;
-    } else if (commitAgeInDays >= OLD_DAYS) {
-        darkSaturation = 15; // Lower saturation for old commits (dark theme)
-        lightSaturation = 20; // Lower saturation for old commits (light theme)
-    } else {
-        // Interpolate saturation between RECENT_DAYS and OLD_DAYS
-        // Calculate the position in the interpolation range (0 for RECENT_DAYS, 1 for OLD_DAYS)
-        const factor = (commitAgeInDays - RECENT_DAYS) / (OLD_DAYS - RECENT_DAYS);
-        darkSaturation = 70 - (70 - 15) * factor; // Interpolate from 70 down to 15
-        lightSaturation = 80 - (80 - 20) * factor; // Interpolate from 80 down to 20
-    }
-
-    // For commits older than MAX_AGE_DAYS, clamp to the 'old' style
-    if (commitAgeInDays > MAX_AGE_DAYS) {
-        darkSaturation = 15;
-        lightSaturation = 20;
-    }
-
-    // Ensure saturation values are within the valid HSL range (0-100)
-    darkSaturation = Math.max(0, Math.min(100, darkSaturation));
-    lightSaturation = Math.max(0, Math.min(100, lightSaturation));
-
-    const darkColor = `hsl(${h}, ${darkSaturation.toFixed(0)}%, ${darkLightness}%)`;
-    const lightColor = `hsl(${h}, ${lightSaturation.toFixed(0)}%, ${lightLightness}%)`;
-
+    const darkColor = `hsl(${h}, ${saturation}%, 50%)`;
+    const lightColor = `hsl(${h}, ${saturation}%, 50%)`;
     return { lightColor, darkColor };
 }
 
