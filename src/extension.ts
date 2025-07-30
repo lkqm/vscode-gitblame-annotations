@@ -188,7 +188,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
     // Use cache
     if (!reload && decorations && decorations.decorationTypes && decorations.decorationOptions) {
         for (const editor of editors) {
-            const decorationNum = Math.min(decorations.decorationTypes.length, decorations.decorationOptions.length)
+            const decorationNum = Math.min(decorations.decorationTypes.length, decorations.decorationOptions.length);
             for (let i = 0; i < decorationNum; i++) {
                 editor.setDecorations(decorations.decorationTypes[i], decorations.decorationOptions[i]);
             }
@@ -204,7 +204,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             hoverProvider: undefined,
             blames: undefined,
             lineBlames: undefined,
-        }
+        };
     }
     fileDecorations.set(documentUri, decorations);
 
@@ -260,7 +260,9 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         fileBlameStates.set(documentUri, true);
         return true;
     } catch (error: any) {
-        vscode.window.showErrorMessage(`${error.message}`);
+        if (!error.message.includes("code 128")) {
+            vscode.window.showErrorMessage(`${error.message}`);
+        }
         return false;
     }
 }
@@ -387,7 +389,7 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
 function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     const maxWidth = fillTitles(blames);
     if (maxWidth <= 0) {
-        return []
+        return [];
     }
     const singleCommit = new Set(blames.filter(b => b.commited).map(b => b.commit)).size === 1;
 
@@ -451,7 +453,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
 
 function fillTitles(blames: Blame[]): number {
     let maxWidth = 0;
-    
+
     // calculate date width
     const lineDates = new Map<number, string>();
     const maxDateWidth = blames.reduce((maxWidth, line) => {
@@ -630,7 +632,7 @@ function buildUncommitBlame(line: number): Blame {
         summary: '',
         commited: false,
         title: '',
-    }
+    };
 }
 
 

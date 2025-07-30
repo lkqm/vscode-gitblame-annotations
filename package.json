@@ -2,7 +2,7 @@
     "name": "gitblame-annotations",
     "displayName": "Git Blame Annotations",
     "description": "Display git blame in editor gutter like JetBrains IDEs",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "publisher": "lkqm",
     "license": "MIT",
     "repository": {
@@ -18,7 +18,7 @@
     "activationEvents": [
         "onStartupFinished"
     ],
-    "icon": "images/logo.png",
+    "icon": "logo.png",
     "main": "./out/extension.js",
     "contributes": {
         "commands": [
@@ -66,8 +66,8 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "pretest": "npm run compile && npm run lint",
-        "lint": "eslint src --ext ts",
-        "test": "node ./out/test/runTest.js"
+        "lint": "eslint src",
+        "test": "vscode-test"
     },
     "devDependencies": {
         "@types/vscode": "^1.80.0",
@@ -75,6 +75,8 @@
         "@typescript-eslint/eslint-plugin": "^5.42.0",
         "@typescript-eslint/parser": "^5.42.0",
         "eslint": "^8.26.0",
-        "typescript": "^4.8.4"
+        "typescript": "^4.8.4",
+        "@vscode/test-cli": "^0.0.11",
+        "@vscode/test-electron": "^2.5.2"
     }
 }

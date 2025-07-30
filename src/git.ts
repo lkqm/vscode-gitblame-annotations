@@ -81,7 +81,7 @@ export async function getGitRepository(filePath: string): Promise<string> {
  */
 export async function getBlames(workDir: string, file: string): Promise<Blame[]> {
     const blame = await exec(workDir, ['blame', '--incremental', file]);
-    const {totalLines, blames} = parseBlames(blame);
+    const { totalLines, blames } = parseBlames(blame);
     return toBlames(totalLines, blames);
 }
 
@@ -89,12 +89,12 @@ export async function getBlames(workDir: string, file: string): Promise<Blame[]>
  * 获取变更信息
  */
 export async function getChanges(workDir: string, commitId1: string, commitId2?: string): Promise<Change[]> {
-    const args = ["diff-tree", "-r", "--name-status", "-z", "--diff-filter=ADMR", commitId1]
+    const args = ["diff-tree", "-r", "--name-status", "-z", "--diff-filter=ADMR", commitId1];
     if (commitId2) {
         args.push(commitId2);
     }
     const changes = await exec(workDir, args);
-    return parseChanges(workDir, changes)
+    return parseChanges(workDir, changes);
 }
 
 /**
@@ -144,7 +144,7 @@ export async function getFileStatus(workDir: string, filename: string): Promise<
  * 解析增量 blame 信息
  */
 
-function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]} {
+function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[] } {
     const blames: CommitBlame[] = [];
     const lines = blame.split('\n');
 
@@ -157,7 +157,7 @@ function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]}
         timestamp: 0,
         commited: false,
         title: '',
-    }
+    };
     const commitToBlock = new Map<string, CommitBlame>();
     let newBlock = true;
     let totalLines = 0;
@@ -166,7 +166,7 @@ function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]}
         if (newBlock) {
             let parts = line.split(' ');
             let commit = parts[0];
-            if (commit == '') {
+            if (commit === '') {
                 continue;
             }
             const commitBlock = commitToBlock.get(commit);
@@ -185,7 +185,7 @@ function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]}
                     timestamp: 0,
                     commited: (commit !== '0000000000000000000000000000000000000000'),
                     title: '',
-                }
+                };
                 blames.push(currentBlock);
                 commitToBlock.set(commit, currentBlock);
             }
@@ -208,7 +208,7 @@ function parseBlames(blame: string): {totalLines: number, blames: CommitBlame[]}
             newBlock = true;
         }
     }
-    return {totalLines, blames};
+    return { totalLines, blames };
 }
 
 /**
