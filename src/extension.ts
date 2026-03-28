@@ -249,12 +249,12 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
                         const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 
                         const content = new vscode.MarkdownString();
-                        const commitUrl = buildCommitUrl(repoWebBase, blame.commit);
+                        const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
                         if (commitUrl) {
-                            content.appendMarkdown(`commit: [${blame.commit}](${commitUrl})  \n`);
-                        } else {
-                            content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
+                            const viewText = gitPlatform ?`View on ${gitPlatform}`:'Open in Browser';
+                            content.appendMarkdown(`[${viewText}](${commitUrl})  \n`);
                         }
+                        content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
                         content.appendMarkdown(`Author: ${blame.author}  \n`);
                         content.appendMarkdown(`Date: ${dateText}  \n`);
                         if (blame.summary) {

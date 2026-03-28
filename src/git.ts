@@ -211,29 +211,41 @@ export async function getRepoWebBase(workDir: string): Promise<string> {
     return toWebBaseUrl(remote);
 }
 
-export function buildCommitUrl(base: string, commitId: string): string {
-    if (!base || !commitId) return '';
+export function buildCommitUrl(base: string, commitId: string): [string, string] {
+    if (!base || !commitId) return ['',''];
 
+    let platform = '',commitUrl = '';
     try {
         const url = new URL(base);
         const host = url.hostname.toLowerCase();
+        if(host==='github.com') {
+            platform = 'GitHub';
+        } else if(host==='gitlab.com') {
+            platform = 'GitLab';
+        } else if(host==='bitbucket.org') {
+            platform = 'Bitbucket';
+        }else if(host==='gitee.com') {
+            platform = 'Gitee';
+        } else {
+            platform = '';
+        }
+
         // Normalize base (remove trailing slash)
         let baseHref = base.replace(/\/$/, '');
-
-        if (host.includes('gitlab')) {
-            return `${baseHref}/-/commit/${commitId}`;
+        if (platform === 'GitLab') {
+            commitUrl = `${baseHref}/-/commit/${commitId}`;
+        }else if (platform === 'Bitbucket') {
+            commitUrl = `${baseHref}/commits/${commitId}`;
+        }else{
+            // Default (GitHub, Azure DevOps and most others)
+            commitUrl = `${baseHref}/commit/${commitId}`;
         }
-        if (host === 'bitbucket.org') {
-            return `${baseHref}/commits/${commitId}`;
-        }
-
-        // Default (GitHub, Azure DevOps and most others)
-        return `${baseHref}/commit/${commitId}`;
-
     } catch (_) {
         // If base isn't a full URL, fallback
-        return `${base.replace(/\/$/, '')}/commit/${commitId}`;
+        platform = '';
+        commitUrl=`${base.replace(/\/$/, '')}/commit/${commitId}`;
     }
+    return [commitUrl, platform];
 }
 
 /**
