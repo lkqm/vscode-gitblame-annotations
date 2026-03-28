@@ -1,7 +1,7 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
-import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId } from './git';
+import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase, buildCommitUrl } from './git';
 
 
 // 全局状态
@@ -215,6 +215,10 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             blames.push(buildUncommitBlame(i + 1));
         }
 
+        // Repo web base for commit links
+        const repositoryRoot = await getGitRepository(document.fileName);
+        const repoWebBase = repositoryRoot ? await getRepoWebBase(repositoryRoot) : "";
+
         // Decorations
         if (!decorations.decorationTypes) {
             decorations.decorationTypes = [];
@@ -235,7 +239,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         decorations.hoverProvider = vscode.languages.registerHoverProvider(
             { scheme: 'file', pattern: document.fileName },
             {
-                provideHover(document: vscode.TextDocument, position: vscode.Position) {
+                async provideHover(document: vscode.TextDocument, position: vscode.Position) {
                     if (position.character > 0) {
                         return undefined;
                     }
@@ -245,7 +249,12 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
                         const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 
                         const content = new vscode.MarkdownString();
-                        content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
+                        const commitUrl = buildCommitUrl(repoWebBase, blame.commit);
+                        if (commitUrl) {
+                            content.appendMarkdown(`commit: [${blame.commit}](${commitUrl})  \n`);
+                        } else {
+                            content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
+                        }
                         content.appendMarkdown(`Author: ${blame.author}  \n`);
                         content.appendMarkdown(`Date: ${dateText}  \n`);
                         if (blame.summary) {

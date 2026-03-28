@@ -140,6 +140,102 @@ export async function getFileStatus(workDir: string, filename: string): Promise<
     }
 }
 
+export async function getRemoteUrl(workDir: string): Promise<string> {
+    try {
+        // Prefer push url
+        const url = (await exec(workDir, ['remote', 'get-url', '--push', 'origin'])).trim();
+        if (url) return url;
+    } catch (_) {}
+
+    try {
+        const url = (await exec(workDir, ['remote', 'get-url', 'origin'])).trim();
+        if (url) return url;
+    } catch (_) {}
+
+    try {
+        const remotes = await exec(workDir, ['remote', '-v']);
+        const lines = remotes.split('\n');
+        // Find origin push first, then origin fetch
+        let candidate = lines.find(l => l.startsWith('origin\t') && l.includes('(push)')) ||
+            lines.find(l => l.startsWith('origin\t') && l.includes('(fetch)')) || '';
+        if (candidate) {
+            const parts = candidate.split('\t')[1]?.split(' ');
+            if (parts && parts[0]) return parts[0];
+        }
+    } catch (_) {}
+
+    return '';
+}
+
+function toWebBaseUrl(remoteUrl: string): string {
+    if (!remoteUrl) return '';
+
+    // git@host:owner/repo.git
+    const scpLike = /^(?:[^@]+)@([^:]+):(.+)$/; // git@github.com:owner/repo.git
+    const sshProto = /^ssh:\/\//i; // ssh://git@github.com/owner/repo.git
+
+    try {
+        if (scpLike.test(remoteUrl)) {
+            const match = remoteUrl.match(scpLike);
+            if (!match) return '';
+            const host = match[1];
+            let pathPart = match[2];
+            if (pathPart.endsWith('.git')) pathPart = pathPart.slice(0, -4);
+            return `https://${host}/${pathPart}`;
+        }
+
+        if (sshProto.test(remoteUrl)) {
+            // Convert ssh://git@host/owner/repo.git -> https://host/owner/repo
+            const url = new URL(remoteUrl);
+            const host = url.hostname;
+            let pathname = url.pathname.replace(/^\/+/, '');
+            if (pathname.endsWith('.git')) pathname = pathname.slice(0, -4);
+            return `https://${host}/${pathname}`;
+        }
+
+        // https/http
+        const url = new URL(remoteUrl.replace(/^git\+/, ''));
+        let pathname = url.pathname;
+        if (pathname.endsWith('.git')) pathname = pathname.slice(0, -4);
+
+        // Azure DevOps often has path like /org/project/_git/repo
+        // Leave as-is; commit URL appender will handle it.
+        return `${url.protocol}//${url.hostname}${pathname}`;
+    } catch (_) {
+        return '';
+    }
+}
+
+export async function getRepoWebBase(workDir: string): Promise<string> {
+    const remote = await getRemoteUrl(workDir);
+    return toWebBaseUrl(remote);
+}
+
+export function buildCommitUrl(base: string, commitId: string): string {
+    if (!base || !commitId) return '';
+
+    try {
+        const url = new URL(base);
+        const host = url.hostname.toLowerCase();
+        // Normalize base (remove trailing slash)
+        let baseHref = base.replace(/\/$/, '');
+
+        if (host.includes('gitlab')) {
+            return `${baseHref}/-/commit/${commitId}`;
+        }
+        if (host === 'bitbucket.org') {
+            return `${baseHref}/commits/${commitId}`;
+        }
+
+        // Default (GitHub, Azure DevOps and most others)
+        return `${baseHref}/commit/${commitId}`;
+
+    } catch (_) {
+        // If base isn't a full URL, fallback
+        return `${base.replace(/\/$/, '')}/commit/${commitId}`;
+    }
+}
+
 /**
  * 解析增量 blame 信息
  */
