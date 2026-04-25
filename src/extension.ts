@@ -476,7 +476,7 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
                     color: new vscode.ThemeColor('list.deemphasizedForeground'),
                     width: `${maxWidth + 2}ch`,
                     fontWeight: 'normal',
-                    fontStyle: 'normal',
+                    fontStyle: 'normal'
                 }
             }
         };
@@ -484,7 +484,6 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
 
         const optionHeatmap: vscode.DecorationOptions = {
             range,
-            hoverMessage,
             renderOptions: {
                 before: {
                     contentText: '\u2007',
@@ -529,14 +528,14 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string):
     const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
     if (commitUrl) {
         const viewText = gitPlatform ? `View on ${gitPlatform}` : 'Open in Browser';
-        content.appendMarkdown(`[${viewText}](${commitUrl}) \n`);
+        content.appendMarkdown(`[${viewText}](${commitUrl})\n\n`);
     }
 
-    content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))}) \n`);
-    content.appendMarkdown(`Author: ${blame.author} \n`);
-    content.appendMarkdown(`Date: ${dateText} \n`);
+    content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))})\n\n`);
+    content.appendMarkdown(`Author: ${blame.author}\n`);
+    content.appendMarkdown(`Date: ${dateText}\n\n`);
     if (blame.summary) {
-        content.appendMarkdown(`\n\n${blame.summary}`);
+        content.appendMarkdown(`${blame.summary}`);
     }
 
     content.isTrusted = true;
