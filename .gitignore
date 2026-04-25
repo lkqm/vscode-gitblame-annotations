@@ -41,6 +41,4 @@ coverage/
 # 环境变量
 .env
 .env.local
-.env.*.local 
-
-repomix-output.xml
+.env.*.local
