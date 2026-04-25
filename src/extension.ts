@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
-import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
+import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -583,7 +583,10 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
-            line.title = `${tsText} ${line.author}`
+            const remainingWidth = MaxTitleWidth - maxTimestampWidth;
+            const formattedAuthor = formatAuthor(line.author, config.authorNameStyle).padStart(remainingWidth, '\u2007');
+
+            line.title = `${tsText}${formattedAuthor}`
         } else {
             line.title = '';
         }

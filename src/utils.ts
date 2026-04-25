@@ -41,6 +41,19 @@ export function formatDate(timestamp: number, style: DateFormatStyle): string {
 	return new Intl.DateTimeFormat(locale, options).format(date);
 }
 
+export function formatAuthor(name: string, style: AuthorNameStyle) {
+	if (!name || name.trim() === "") return "";
+
+	const parts = name.split(" ");
+	switch (style) {
+		case "first": return parts[0];
+		case "last": return parts[parts.length - 1];
+		case "full":
+		default:
+			return name;
+	}
+}
+
 export function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
 	switch (change.status) {
 		case "index_added":
