@@ -293,7 +293,20 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         decorations.blames = blames;
         decorations.lineBlames = new Map(blames.map((blame, index) => [index, blame]));
         decorations.hoverProvider?.dispose();
-        decorations.hoverProvider = undefined;
+        decorations.hoverProvider = vscode.languages.registerHoverProvider(
+            { scheme: 'file', pattern: document.fileName },
+            {
+                async provideHover(document: vscode.TextDocument, position: vscode.Position) {
+                    if (position.character > 0) return undefined;
+                    const blame = fileDecorations.get(documentUri)?.lineBlames?.get(position.line);
+                    if (!blame) return undefined;
+
+                    const content = buildHoverMessage(blame, document.fileName, repoWebBase);
+                    if (!content) return undefined;
+                    return new vscode.Hover(content)
+                }
+            }
+        );
         fileBlameStates.set(documentUri, true);
         return true;
     } catch (error: any) {
@@ -466,10 +479,10 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
             new vscode.Position(index, 0),
             new vscode.Position(index, 0)
         );
-        const hoverMessage = buildHoverMessage(blame, fileName, repoWebBase);
+        // const hoverMessage = buildHoverMessage(blame, fileName, repoWebBase);
         const option: vscode.DecorationOptions = {
             range,
-            hoverMessage,
+            // hoverMessage,
             renderOptions: {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
@@ -528,16 +541,15 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string):
     const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
     if (commitUrl) {
         const viewText = gitPlatform ? `View on ${gitPlatform}` : 'Open in Browser';
-        content.appendMarkdown(`[${viewText}](${commitUrl})\n\n`);
+        content.appendMarkdown(`[${viewText}](${commitUrl})  \n`);
     }
 
-    content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))})\n\n`);
-    content.appendMarkdown(`Author: ${blame.author}\n`); // TODO only last name / truncate
-    content.appendMarkdown(`Date: ${dateText}\n\n`);
+    content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))})  \n`);
+    content.appendMarkdown(`Author: ${blame.author}  \n`); // TODO only last name/truncate
+    content.appendMarkdown(`Date: ${dateText}  \n`);
     if (blame.summary) {
-        content.appendMarkdown(`${blame.summary}`);
+        content.appendMarkdown(`\n\n${blame.summary}`);
     }
-
     content.isTrusted = true;
     return content;
 }
