@@ -68,15 +68,16 @@
                     "default": true,
                     "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
                 },
-                "gitblame.showCommitMessage": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Show the commit message in the blame gutter (widens the gutter)."
-                },
-                "gitblame.relativeTimestamps": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Show relative timestamps (e.g. '7 months ago') instead of absolute dates."
+                "gitblame.dateFormatStyle": {
+                    "type": "string",
+                    "default": "relative",
+                    "enum": [
+                        "YYYY-MM-DD",
+                        "Y/M/D",
+                        "DD.MM.YYYY",
+                        "relative"
+                    ],
+                    "description": "Choose the date format for blame annotations."
                 }
             }
         }
@@ -98,5 +99,8 @@
         "@vscode/test-electron": "^2.5.2",
         "eslint": "^8.26.0",
         "typescript": "^4.8.4"
+    },
+    "dependencies": {
+        "timeago.js": "^4.0.2"
     }
 }

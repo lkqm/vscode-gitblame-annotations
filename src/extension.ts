@@ -1,6 +1,7 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
+import { format as timeagoFormat } from 'timeago.js';
 import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase, buildCommitUrl } from './git';
 
 
@@ -15,18 +16,20 @@ const fileDecorations = new Map<string, {
     highlightDecorationType: vscode.TextEditorDecorationType | undefined,
 }>();
 
+type DateFormatStyle = 'YYYY-MM-DD' | 'Y/M/D' | 'DD.MM.YYYY' | 'relative'
 interface BlameDisplayConfig {
-    relativeTimestamps: boolean;
     mergeCommitLines: boolean;
+    dateFormatStyle: DateFormatStyle
 }
 
 const MaxTitleWidth = 25;
+const VALID_FORMATS: DateFormatStyle[] = ['YYYY-MM-DD', 'Y/M/D', 'DD.MM.YYYY', 'relative'];
 
 /**
  * 激活插件
  */
 export function activate(context: vscode.ExtensionContext) {
-    registerCommands(context);
+        registerCommands(context);
     registerListeners(context);
     const editor = vscode.window.activeTextEditor;
     if (editor) {
@@ -36,10 +39,10 @@ export function activate(context: vscode.ExtensionContext) {
     // Dev-only: auto-reload extension host when compiled output changes
     if (context.extensionMode === vscode.ExtensionMode.Development) {
         const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(context.extensionUri, 'out/**/*.js')
+            new vscode.RelativePattern(context.extensionUri, 'out/**/*.js')
         );
         watcher.onDidChange(() => {
-        vscode.commands.executeCommand('workbench.action.reloadWindow');
+            vscode.commands.executeCommand('workbench.action.reloadWindow');
         });
         context.subscriptions.push(watcher);
     }
@@ -214,7 +217,6 @@ function registerListeners(context: vscode.ExtensionContext) {
         const ranges = state.blames
             ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
             .filter((r): r is vscode.Range => r !== null) ?? [];
-
         editor.setDecorations(state.highlightDecorationType, ranges);
     });
 
@@ -298,8 +300,12 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
                     }
                     const blame = fileDecorations.get(documentUri)?.lineBlames?.get(position.line);
                     if (blame && blame.commited) {
-                        const date = new Date(blame.timestamp * 1000);
-                        const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+                        const rawStyle = vscode.workspace.getConfiguration('gitblame').get<string>('dateFormatStyle', 'relative');
+                        const activeStyle: DateFormatStyle = VALID_FORMATS.includes(rawStyle as DateFormatStyle)
+                            ? (rawStyle as DateFormatStyle)
+                            : 'relative';
+                        const hoverStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
+                        const dateText = formatDate(blame.timestamp, hoverStyle);
 
                         const content = new vscode.MarkdownString();
                         const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
@@ -451,9 +457,15 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
 
 function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     const cfg = vscode.workspace.getConfiguration('gitblame');
+
+    const rawDateFormatStyle = cfg.get<string>('dateFormatStyle', 'relative');
+    const validDateFormatStyle = VALID_FORMATS.includes(rawDateFormatStyle as DateFormatStyle)
+        ? (rawDateFormatStyle as DateFormatStyle)
+        : 'relative';
+
     const config: BlameDisplayConfig = {
-        relativeTimestamps: cfg.get<boolean>('relativeTimestamps', true),
         mergeCommitLines: cfg.get<boolean>('mergeCommitLines', true),
+        dateFormatStyle: validDateFormatStyle
     };
 
     const maxWidth = fillTitles(blames, config);
@@ -480,7 +492,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
             renderOptions: {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
-                    color: '#666666',
+                    color: '#7e7e7e',
                     width: `${maxWidth + 2}ch`,
                     fontWeight: 'normal',
                     fontStyle: 'normal',
@@ -527,9 +539,7 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     const lineTimestampText = new Map<number, string>();
     const maxTimestampWidth = blames.reduce((maxW, line) => {
         if (!line.commited) { return maxW; }
-        const text = config.relativeTimestamps
-            ? formatRelativeTime(line.timestamp)
-            : formatAbsoluteDate(line.timestamp);
+        const text = formatDate(line.timestamp, config.dateFormatStyle)
         lineTimestampText.set(line.line, text);
         return Math.max(maxW, text.length);
     }, 8);
@@ -575,25 +585,23 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
 // ------------------------------------------------------------
 // utils
 // ------------------------------------------------------------
+/** 
+ * @param timestamp timestamp in seconds
+ */
+function formatDate(timestamp: number, style: DateFormatStyle): string {
+    if (style === 'relative') {
+        const locale = vscode.env.language.startsWith('zh') ? 'zh_CN' : 'en_US';
+        return timeagoFormat(new Date(timestamp * 1000), locale);
+    }
 
-function formatAbsoluteDate(timestamp: number): string {
     const date = new Date(timestamp * 1000);
-    return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-}
-
-function formatRelativeTime(timestamp: number): string {
-    const seconds = Math.floor(Date.now() / 1000 - timestamp);
-    if (seconds < 60) { return `${seconds}s ago`; }
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) { return `${minutes}m ago`; }
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) { return `${hours}h ago`; }
-    const days = Math.floor(hours / 24);
-    if (days < 30) { return `${days}d ago`; }
-    const months = Math.floor(days / 30);
-    if (months < 12) { return `${months} month${months !== 1 ? 's' : ''} ago`; }
-    const years = Math.floor(months / 12);
-    return `${years} year${years !== 1 ? 's' : ''} ago`;
+    const map: Record<string, [string, Intl.DateTimeFormatOptions]> = {
+        'YYYY-MM-DD': ['en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }],
+        'Y/M/D':      ['en-GB', { year: 'numeric', month: 'numeric',  day: 'numeric'  }],
+        'DD.MM.YYYY': ['de-DE', { year: 'numeric', month: '2-digit', day: '2-digit' }],
+    };
+    const [locale, options] = map[style];
+    return new Intl.DateTimeFormat(locale, options).format(date);
 }
 
 function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
