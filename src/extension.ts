@@ -532,7 +532,7 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string):
     }
 
     content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))})\n\n`);
-    content.appendMarkdown(`Author: ${blame.author}\n`);
+    content.appendMarkdown(`Author: ${blame.author}\n`); // TODO only last name / truncate
     content.appendMarkdown(`Date: ${dateText}\n\n`);
     if (blame.summary) {
         content.appendMarkdown(`${blame.summary}`);
