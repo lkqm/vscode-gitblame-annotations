@@ -1,9 +1,9 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
-import { Blame, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase, buildCommitUrl } from './git';
-import { buildUncommitBlame, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText } from './utils'
-import type { DateFormatStyle } from './utils';
+import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
+import type { AuthorNameStyle, DateFormatStyle } from './utils';
+import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -19,11 +19,11 @@ const fileDecorations = new Map<string, {
 
 interface BlameDisplayConfig {
     mergeCommitLines: boolean;
-    dateFormatStyle: DateFormatStyle
+    dateFormatStyle: DateFormatStyle,
+    authorNameStyle: AuthorNameStyle
 }
 
 const MaxTitleWidth = 25;
-const VALID_FORMATS: DateFormatStyle[] = ['YYYY-MM-DD', 'Y/M/D', 'DD.MM.YYYY', 'relative'];
 
 /**
 * 激活插件
@@ -130,7 +130,13 @@ function registerCommands(context: vscode.ExtensionContext) {
             await vscode.commands.executeCommand('_workbench.openMultiDiffEditor', { multiDiffSourceUri, title, resources });
         }
     });
-    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand);
+
+    const copyHashCommand = vscode.commands.registerCommand('git.blame.copyHash', async (hash: string) => {
+        if (!hash) return;
+        vscode.env.clipboard.writeText(hash);
+    });
+
+    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand);
 }
 
 /**
@@ -303,7 +309,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
 
                     const content = buildHoverMessage(blame, document.fileName, repoWebBase);
                     if (!content) return undefined;
-                    return new vscode.Hover(content)
+                    return new vscode.Hover(content, new vscode.Range(position.line, 0, position.line, 0))
                 }
             }
         );
@@ -448,14 +454,10 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
 function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: string): vscode.DecorationOptions[][] {
     const cfg = vscode.workspace.getConfiguration('gitblame');
 
-    const rawDateFormatStyle = cfg.get('dateFormatStyle', 'relative');
-    const validDateFormatStyle = VALID_FORMATS.includes(rawDateFormatStyle as DateFormatStyle)
-        ? (rawDateFormatStyle as DateFormatStyle)
-        : 'relative';
-
     const config: BlameDisplayConfig = {
         mergeCommitLines: cfg.get('mergeCommitLines', true),
-        dateFormatStyle: validDateFormatStyle
+        dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
+        authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle)
     };
 
     const maxWidth = fillTitles(blames, config);
@@ -479,10 +481,8 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
             new vscode.Position(index, 0),
             new vscode.Position(index, 0)
         );
-        // const hoverMessage = buildHoverMessage(blame, fileName, repoWebBase);
         const option: vscode.DecorationOptions = {
             range,
-            // hoverMessage,
             renderOptions: {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
@@ -530,27 +530,40 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string):
         return undefined;
     }
 
-    const rawStyle = vscode.workspace.getConfiguration('gitblame').get('dateFormatStyle', 'relative');
-    const activeStyle: DateFormatStyle = VALID_FORMATS.includes(rawStyle as DateFormatStyle)
+    const rawStyle = vscode.workspace.getConfiguration('gitblame').get('dateFormatStyle', defaultDateFormatStyle);
+    const activeStyle: DateFormatStyle = VALID_DATEFORMATSTYLES.includes(rawStyle as DateFormatStyle)
         ? (rawStyle as DateFormatStyle)
-        : 'relative';
+        : defaultDateFormatStyle;
+
+    const relativeDate = formatDate(blame.timestamp, 'relative')
     const hoverStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
     const dateText = formatDate(blame.timestamp, hoverStyle);
 
     const content = new vscode.MarkdownString();
     const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
-    if (commitUrl) {
-        const viewText = gitPlatform ? `View on ${gitPlatform}` : 'Open in Browser';
-        content.appendMarkdown(`[${viewText}](${commitUrl})  \n`);
-    }
+    let viewExternal = '';
+    content.appendMarkdown(`**[${blame.author}](mailto:${blame.mail})**  \n`);
+    content.appendMarkdown(`_${relativeDate}_ (${dateText})  \n`)
 
-    content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))})  \n`);
-    content.appendMarkdown(`Author: ${blame.author}  \n`); // TODO only last name/truncate
-    content.appendMarkdown(`Date: ${dateText}  \n`);
     if (blame.summary) {
         content.appendMarkdown(`\n\n${blame.summary}`);
     }
+
+    if (commitUrl) {
+        const viewText = gitPlatform ? `Open on ${gitPlatform}` : 'Open in Browser';
+        viewExternal = ` | [${viewText}](${commitUrl})`
+    }
+
+    const openCommitUri = encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))
+    const commit7 = `[${blame.commit.slice(0, 8)}](command:git.blame.viewCommit?${openCommitUri})`
+
+    const copyIcon = `[$(copy)](command:git.blame.copyHash?${encodeURIComponent(JSON.stringify([blame.commit]))})`
+
+    content.appendMarkdown("\n\n---\n\n")
+    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}  \n`);
+
     content.isTrusted = true;
+    content.supportThemeIcons = true;
     return content;
 }
 

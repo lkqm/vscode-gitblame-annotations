@@ -3,7 +3,24 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, Change } from './git';
 
+// keep the defaults in sync with package.json
 export type DateFormatStyle = 'YYYY-MM-DD' | 'Y/M/D' | 'DD.MM.YYYY' | 'relative'
+export const VALID_DATEFORMATSTYLES: DateFormatStyle[] = ['YYYY-MM-DD', 'Y/M/D', 'DD.MM.YYYY', 'relative'];
+export const defaultDateFormatStyle: DateFormatStyle = 'YYYY-MM-DD'
+
+export type AuthorNameStyle = 'full' | 'first' | 'last'
+export const VALID_AUTHORNAMESTYLES: AuthorNameStyle[] = ['full', 'first', 'last'];
+export const defaultAuthorNameStyle: AuthorNameStyle = 'full';
+
+export function validateConfigEnum<T extends string>(
+	cfg: vscode.WorkspaceConfiguration, 
+	VALID_ARR: T[], 
+	key: string, 
+	fallback: T
+): T {
+	const raw = cfg.get<string>(key, fallback);
+	return VALID_ARR.includes(raw as T) ? (raw as T) : fallback;
+}
 
 /**
 * @param timestamp timestamp in seconds

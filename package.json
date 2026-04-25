@@ -70,14 +70,24 @@
                 },
                 "gitblame.dateFormatStyle": {
                     "type": "string",
-                    "default": "relative",
+                    "default": "YYYY-MM-DD",
                     "enum": [
                         "YYYY-MM-DD",
                         "Y/M/D",
                         "DD.MM.YYYY",
                         "relative"
                     ],
-                    "description": "Choose the date format for blame annotations."
+                    "description": "The date format for blame annotations."
+                },
+                "gitblame.authorNameStyle": {
+                    "type": "string",
+                    "default": "full",
+                    "enum": [
+                        "full",
+                        "first",
+                        "last"
+                    ],
+                    "description": "Whether to show the Commit Author's full name, or only first/last"
                 }
             }
         }
