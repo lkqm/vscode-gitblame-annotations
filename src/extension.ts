@@ -34,6 +34,17 @@ export function activate(context: vscode.ExtensionContext) {
     if (editor) {
         updateMenuContext(editor.document);
     }
+
+    // Dev-only: auto-reload extension host when compiled output changes
+    if (context.extensionMode === vscode.ExtensionMode.Development) {
+        const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(context.extensionUri, 'out/**/*.js')
+        );
+        watcher.onDidChange(() => {
+        vscode.commands.executeCommand('workbench.action.reloadWindow');
+        });
+        context.subscriptions.push(watcher);
+    }
 }
 
 /**
@@ -190,7 +201,7 @@ function registerListeners(context: vscode.ExtensionContext) {
         if (!state.highlightDecorationType) {
             state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
                 isWholeLine: true,
-                backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+                backgroundColor: "rgba(0, 188, 242, 0.2)"
             });
         }
 
@@ -467,7 +478,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
             new vscode.Position(index, 0),
             new vscode.Position(index, 0)
         );
-        const option = {
+        const option: { range: vscode.Range, renderOptions: vscode.DecorationRenderOptions } = {
             range,
             renderOptions: {
                 before: {
