@@ -29,7 +29,7 @@ const VALID_FORMATS: DateFormatStyle[] = ['YYYY-MM-DD', 'Y/M/D', 'DD.MM.YYYY', '
  * 激活插件
  */
 export function activate(context: vscode.ExtensionContext) {
-        registerCommands(context);
+    registerCommands(context);
     registerListeners(context);
     const editor = vscode.window.activeTextEditor;
     if (editor) {
@@ -597,7 +597,7 @@ function formatDate(timestamp: number, style: DateFormatStyle): string {
     const date = new Date(timestamp * 1000);
     const map: Record<string, [string, Intl.DateTimeFormatOptions]> = {
         'YYYY-MM-DD': ['en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }],
-        'Y/M/D':      ['en-GB', { year: 'numeric', month: 'numeric',  day: 'numeric'  }],
+        'Y/M/D': ['en-GB', { year: 'numeric', month: 'numeric', day: 'numeric' }],
         'DD.MM.YYYY': ['de-DE', { year: 'numeric', month: '2-digit', day: '2-digit' }],
     };
     const [locale, options] = map[style];
