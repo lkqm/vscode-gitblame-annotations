@@ -12,8 +12,17 @@ const fileDecorations = new Map<string, {
     hoverProvider: vscode.Disposable | undefined,
     blames: Blame[] | undefined,
     lineBlames: Map<number, Blame> | undefined,
+    highlightDecorationType: vscode.TextEditorDecorationType | undefined,
 }>();
+
+interface BlameDisplayConfig {
+    relativeTimestamps: boolean;
+    showMessage: boolean;
+    mergeCommitLines: boolean;
+}
+
 const MaxTitleWidth = 25;
+const MaxTitleWidthWithMessage = 60;
 
 /**
  * 激活插件
@@ -34,6 +43,7 @@ export function deactivate() {
     for (const [_, decorations] of fileDecorations) {
         decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
+        decorations.highlightDecorationType?.dispose();
     }
     fileDecorations.clear();
     fileBlameStates.clear();
@@ -123,7 +133,6 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    // Visible Editor Change
     const visibleEditorChangeSubscription = vscode.window.onDidChangeVisibleTextEditors(editors => {
         for (const editor of editors) {
             const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
@@ -142,6 +151,7 @@ function registerListeners(context: vscode.ExtensionContext) {
             fileDecorations.delete(documentUri);
             decorations.decorationTypes?.forEach(type => type.dispose());
             decorations.hoverProvider?.dispose();
+            decorations.highlightDecorationType?.dispose();
         }
     });
 
@@ -169,7 +179,40 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription, saveDocumentSubscription, changeDocumentSubscription);
+    // Highlight all lines of the commit under the cursor
+    const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
+        const editor = event.textEditor;
+        const uri = editor.document.uri.toString();
+        if (!fileBlameStates.get(uri)) { return; }
+        const state = fileDecorations.get(uri);
+        if (!state) { return; }
+
+        if (!state.highlightDecorationType) {
+            state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
+                isWholeLine: true,
+                backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+            });
+        }
+
+        const lineIdx = event.selections[0].active.line;
+        const blame = state.lineBlames?.get(lineIdx);
+
+        if (!blame?.commited) {
+            editor.setDecorations(state.highlightDecorationType, []);
+            return;
+        }
+
+        const ranges = state.blames
+        ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
+        .filter((r): r is vscode.Range => r !== null) ?? [];
+
+        editor.setDecorations(state.highlightDecorationType, ranges);
+    });
+
+    context.subscriptions.push(
+        editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription,
+        saveDocumentSubscription, changeDocumentSubscription, selectionChangeSubscription
+    );
 }
 
 /**
@@ -204,6 +247,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             hoverProvider: undefined,
             blames: undefined,
             lineBlames: undefined,
+            highlightDecorationType: undefined,
         };
     }
     fileDecorations.set(documentUri, decorations);
@@ -251,7 +295,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
                         const content = new vscode.MarkdownString();
                         const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
                         if (commitUrl) {
-                            const viewText = gitPlatform ?`View on ${gitPlatform}`:'Open in Browser';
+                            const viewText = gitPlatform ? `View on ${gitPlatform}` : 'Open in Browser';
                             content.appendMarkdown(`[${viewText}](${commitUrl})  \n`);
                         }
                         content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
@@ -289,6 +333,7 @@ async function hideDecorations(document: vscode.TextDocument): Promise<boolean> 
         fileDecorations.delete(documentUri);
         decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
+        decorations.highlightDecorationType?.dispose();
         return true;
     }
     return false;
@@ -396,7 +441,14 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
 }
 
 function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
-    const maxWidth = fillTitles(blames);
+    const cfg = vscode.workspace.getConfiguration('gitblame');
+    const config: BlameDisplayConfig = {
+        relativeTimestamps: cfg.get<boolean>('relativeTimestamps', true),
+        showMessage: cfg.get<boolean>('showCommitMessage', false),
+        mergeCommitLines: cfg.get<boolean>('mergeCommitLines', false),
+    };
+
+    const maxWidth = fillTitles(blames, config);
     if (maxWidth <= 0) {
         return [];
     }
@@ -413,7 +465,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
         }
         const range = new vscode.Range(
             new vscode.Position(index, 0),
-            new vscode.Position(index, 0)
+                                       new vscode.Position(index, 0)
         );
         const option = {
             range,
@@ -460,43 +512,41 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
 }
 
 
-function fillTitles(blames: Blame[]): number {
+function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     let maxWidth = 0;
+    const maxTitleWidth = config.showMessage ? MaxTitleWidthWithMessage : MaxTitleWidth;
 
-    // calculate date width
-    const lineDates = new Map<number, string>();
-    const maxDateWidth = blames.reduce((maxWidth, line) => {
-        if (!line.commited) {
-            return maxWidth;
-        }
-        const date = new Date(line.timestamp * 1000);
-        const dateText = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-        lineDates.set(line.line, dateText);
-        return Math.max(maxWidth, dateText.length);
+    // Compute per-line timestamp strings and the max width for alignment padding
+    const lineTimestampText = new Map<number, string>();
+    const maxTimestampWidth = blames.reduce((maxW, line) => {
+        if (!line.commited) { return maxW; }
+        const text = config.relativeTimestamps
+        ? formatRelativeTime(line.timestamp)
+        : formatAbsoluteDate(line.timestamp);
+        lineTimestampText.set(line.line, text);
+        return Math.max(maxW, text.length);
     }, 8);
 
     const textWidths = new Map<string, { width: number, widths: number[] }>();
     blames.forEach(line => {
         if (line.commited) {
-            const dateText = lineDates.get(line.line)?.padEnd(maxDateWidth, '\u2007');
-            line.title = `${dateText} ${line.author}`;
+            const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
+            line.title = config.showMessage && line.summary
+            ? `${tsText} ${line.author} ${line.summary}`
+            : `${tsText} ${line.author}`;
         } else {
             line.title = '';
         }
 
-        // calculate title width
         if (!textWidths.has(line.commit)) {
             const { width, widths } = getTextWidth(line.title);
             textWidths.set(line.commit, { width, widths });
-            if (width > maxWidth) {
-                maxWidth = width;
-            }
+            if (width > maxWidth) { maxWidth = width; }
         }
     });
 
-    if (maxWidth > MaxTitleWidth) {
-        maxWidth = MaxTitleWidth;
-        // trancate title
+    if (maxWidth > maxTitleWidth) {
+        maxWidth = maxTitleWidth;
         blames.forEach(line => {
             const { width, widths } = textWidths.get(line.commit) || { width: 0, widths: [] };
             if (width > maxWidth) {
@@ -505,12 +555,41 @@ function fillTitles(blames: Blame[]): number {
         });
     }
 
+    // Blank non-first lines of each consecutive same-commit block
+    if (config.mergeCommitLines) {
+        for (let i = 1; i < blames.length; i++) {
+            if (blames[i].commited && blames[i].commit === blames[i - 1].commit) {
+                blames[i].title = '';
+            }
+        }
+    }
+
     return maxWidth;
 }
 
 // ------------------------------------------------------------
 // utils
 // ------------------------------------------------------------
+
+function formatAbsoluteDate(timestamp: number): string {
+    const date = new Date(timestamp * 1000);
+    return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function formatRelativeTime(timestamp: number): string {
+    const seconds = Math.floor(Date.now() / 1000 - timestamp);
+    if (seconds < 60) { return `${seconds}s ago`; }
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) { return `${minutes}m ago`; }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) { return `${hours}h ago`; }
+    const days = Math.floor(hours / 24);
+    if (days < 30) { return `${days}d ago`; }
+    const months = Math.floor(days / 30);
+    if (months < 12) { return `${months} month${months !== 1 ? 's' : ''} ago`; }
+    const years = Math.floor(months / 12);
+    return `${years} year${years !== 1 ? 's' : ''} ago`;
+}
 
 function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
     switch (change.status) {
@@ -581,19 +660,19 @@ function getCharacterWidth(char: string): number {
         (code >= 0xF900 && code <= 0xFAFF) ||
         (code >= 0xFF00 && code <= 0xFFEF)) {
         return 2;
-    }
+        }
 
     // 表情符号和特殊符号
-    if (code >= 0x1F300 && code <= 0x1F9FF) {
-        return 2;
-    }
+        if (code >= 0x1F300 && code <= 0x1F9FF) {
+            return 2;
+        }
 
     // 组合字符标记
-    if (code >= 0x0300 && code <= 0x036F) {
-        return 0;
-    }
+        if (code >= 0x0300 && code <= 0x036F) {
+            return 0;
+        }
 
-    return 1;
+        return 1;
 }
 
 function trancateText(text: string, maxWidth: number, widths: number[]): string {
@@ -694,7 +773,6 @@ function resolveChange(change: vscode.TextDocumentContentChangeEvent) {
                 for (let i = startLine; i <= endLine + diff; i++) {
                     modifiedLines.push(i);
                 }
-                // delete lines
                 const start = endLine + diff + 1;
                 const end = endLine;
                 for (let i = start; i <= end; i++) {
