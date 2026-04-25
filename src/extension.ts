@@ -492,7 +492,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
             renderOptions: {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
-                    color: '#7e7e7e',
+                    color: new vscode.ThemeColor('list.deemphasizedForeground'),
                     width: `${maxWidth + 2}ch`,
                     fontWeight: 'normal',
                     fontStyle: 'normal',
