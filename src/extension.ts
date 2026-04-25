@@ -17,12 +17,10 @@ const fileDecorations = new Map<string, {
 
 interface BlameDisplayConfig {
     relativeTimestamps: boolean;
-    showMessage: boolean;
     mergeCommitLines: boolean;
 }
 
 const MaxTitleWidth = 25;
-const MaxTitleWidthWithMessage = 60;
 
 /**
  * 激活插件
@@ -455,7 +453,6 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     const cfg = vscode.workspace.getConfiguration('gitblame');
     const config: BlameDisplayConfig = {
         relativeTimestamps: cfg.get<boolean>('relativeTimestamps', true),
-        showMessage: cfg.get<boolean>('showCommitMessage', true),
         mergeCommitLines: cfg.get<boolean>('mergeCommitLines', true),
     };
 
@@ -525,7 +522,6 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
 
 function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     let maxWidth = 0;
-    const maxTitleWidth = config.showMessage ? MaxTitleWidthWithMessage : MaxTitleWidth;
 
     // Compute per-line timestamp strings and the max width for alignment padding
     const lineTimestampText = new Map<number, string>();
@@ -542,9 +538,7 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
-            line.title = config.showMessage && line.summary
-                ? `${tsText} ${line.author} ${line.summary}`
-                : `${tsText} ${line.author}`;
+            line.title = `${tsText} ${line.author}`
         } else {
             line.title = '';
         }
@@ -556,8 +550,8 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
         }
     });
 
-    if (maxWidth > maxTitleWidth) {
-        maxWidth = maxTitleWidth;
+    if (maxWidth > MaxTitleWidth) {
+        maxWidth = MaxTitleWidth;
         blames.forEach(line => {
             const { width, widths } = textWidths.get(line.commit) || { width: 0, widths: [] };
             if (width > maxWidth) {
