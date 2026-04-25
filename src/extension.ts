@@ -203,8 +203,8 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
 
         const ranges = state.blames
-        ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
-        .filter((r): r is vscode.Range => r !== null) ?? [];
+            ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
+            .filter((r): r is vscode.Range => r !== null) ?? [];
 
         editor.setDecorations(state.highlightDecorationType, ranges);
     });
@@ -444,8 +444,8 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     const cfg = vscode.workspace.getConfiguration('gitblame');
     const config: BlameDisplayConfig = {
         relativeTimestamps: cfg.get<boolean>('relativeTimestamps', true),
-        showMessage: cfg.get<boolean>('showCommitMessage', false),
-        mergeCommitLines: cfg.get<boolean>('mergeCommitLines', false),
+        showMessage: cfg.get<boolean>('showCommitMessage', true),
+        mergeCommitLines: cfg.get<boolean>('mergeCommitLines', true),
     };
 
     const maxWidth = fillTitles(blames, config);
@@ -465,7 +465,7 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
         }
         const range = new vscode.Range(
             new vscode.Position(index, 0),
-                                       new vscode.Position(index, 0)
+            new vscode.Position(index, 0)
         );
         const option = {
             range,
@@ -521,8 +521,8 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     const maxTimestampWidth = blames.reduce((maxW, line) => {
         if (!line.commited) { return maxW; }
         const text = config.relativeTimestamps
-        ? formatRelativeTime(line.timestamp)
-        : formatAbsoluteDate(line.timestamp);
+            ? formatRelativeTime(line.timestamp)
+            : formatAbsoluteDate(line.timestamp);
         lineTimestampText.set(line.line, text);
         return Math.max(maxW, text.length);
     }, 8);
@@ -532,8 +532,8 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
             line.title = config.showMessage && line.summary
-            ? `${tsText} ${line.author} ${line.summary}`
-            : `${tsText} ${line.author}`;
+                ? `${tsText} ${line.author} ${line.summary}`
+                : `${tsText} ${line.author}`;
         } else {
             line.title = '';
         }
@@ -660,19 +660,19 @@ function getCharacterWidth(char: string): number {
         (code >= 0xF900 && code <= 0xFAFF) ||
         (code >= 0xFF00 && code <= 0xFFEF)) {
         return 2;
-        }
+    }
 
     // 表情符号和特殊符号
-        if (code >= 0x1F300 && code <= 0x1F9FF) {
-            return 2;
-        }
+    if (code >= 0x1F300 && code <= 0x1F9FF) {
+        return 2;
+    }
 
     // 组合字符标记
-        if (code >= 0x0300 && code <= 0x036F) {
-            return 0;
-        }
+    if (code >= 0x0300 && code <= 0x036F) {
+        return 0;
+    }
 
-        return 1;
+    return 1;
 }
 
 function trancateText(text: string, maxWidth: number, widths: number[]): string {
