@@ -583,10 +583,10 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
-            const remainingWidth = MaxTitleWidth - maxTimestampWidth;
-            const formattedAuthor = formatAuthor(line.author, config.authorNameStyle).padStart(remainingWidth, '\u2007');
+            const remainingWidth = MaxTitleWidth - maxTimestampWidth - 1;
+            const formattedAuthor = formatAuthor(line.author, config.authorNameStyle).padEnd(remainingWidth, '\u2007');
 
-            line.title = `${tsText}${formattedAuthor}`
+            line.title = `${tsText} ${formattedAuthor}`
         } else {
             line.title = '';
         }
