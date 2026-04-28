@@ -4,7 +4,6 @@ import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
 import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
-import { config } from 'process';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
