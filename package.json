@@ -68,6 +68,11 @@
                     "default": true,
                     "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
                 },
+                "gitblame.highlightChangedLines": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Highlight all lines of the commit under the cursor"
+                },
                 "gitblame.dateFormatStyle": {
                     "type": "string",
                     "default": "YYYY-MM-DD",

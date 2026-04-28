@@ -4,6 +4,7 @@ import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
 import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
+import { config } from 'process';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -18,7 +19,8 @@ const fileDecorations = new Map<string, {
 
 
 interface BlameDisplayConfig {
-    mergeCommitLines: boolean;
+    mergeCommitLines: boolean,
+    highlightChangedLines: boolean,
     dateFormatStyle: DateFormatStyle,
     authorNameStyle: AuthorNameStyle
 }
@@ -199,11 +201,14 @@ function registerListeners(context: vscode.ExtensionContext) {
 
     // Highlight all lines of the commit under the cursor
     const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
+        const enabled = vscode.workspace.getConfiguration('gitblame').get("highlightChangedLines", false) as boolean;
+        if (!enabled) return;
+        
         const editor = event.textEditor;
         const uri = editor.document.uri.toString();
-        if (!fileBlameStates.get(uri)) { return; }
+        if (!fileBlameStates.get(uri)) return;
         const state = fileDecorations.get(uri);
-        if (!state) { return; }
+        if (!state) return;
 
         if (!state.highlightDecorationType) {
             state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
@@ -456,8 +461,9 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
 
     const config: BlameDisplayConfig = {
         mergeCommitLines: cfg.get('mergeCommitLines', true),
+        highlightChangedLines: cfg.get('highlightChangedLines', false),
         dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
-        authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle)
+        authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
     };
 
     const maxWidth = fillTitles(blames, config);
