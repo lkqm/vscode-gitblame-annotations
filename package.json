@@ -65,7 +65,7 @@
             "properties": {
                 "gitblame.mergeCommitLines": {
                     "type": "boolean",
-                    "default": true,
+                    "default": false,
                     "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
                 },
                 "gitblame.highlightChangedLines": {

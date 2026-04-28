@@ -460,7 +460,7 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
     const cfg = vscode.workspace.getConfiguration('gitblame');
 
     const config: BlameDisplayConfig = {
-        mergeCommitLines: cfg.get('mergeCommitLines', true),
+        mergeCommitLines: cfg.get('mergeCommitLines', false),
         highlightChangedLines: cfg.get('highlightChangedLines', false),
         dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
         authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
