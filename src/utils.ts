@@ -34,7 +34,7 @@ export function formatDate(timestamp: number, style: DateFormatStyle): string {
 	const date = new Date(timestamp * 1000);
 	const map: Record<Exclude<DateFormatStyle, 'relative'>, [string, Intl.DateTimeFormatOptions]> = {
 		'YYYY-MM-DD': ['en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }],
-		'Y/M/D': ['en-GB', { year: 'numeric', month: 'numeric', day: 'numeric' }],
+		'Y/M/D': ['zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' }],
 		'DD.MM.YYYY': ['de-DE', { year: 'numeric', month: '2-digit', day: '2-digit' }],
 	};
 	const [locale, options] = map[style as Exclude<DateFormatStyle, 'relative'>];
