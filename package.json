@@ -59,7 +59,43 @@
                 "key": "escape",
                 "when": "editorTextFocus && gitblame.hideMenuState"
             }
-        ]
+        ],
+        "configuration": {
+            "title": "Git Blame Annotations",
+            "properties": {
+                "gitblame.mergeCommitLines": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
+                },
+                "gitblame.highlightChangedLines": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Highlight all lines of the commit under the cursor"
+                },
+                "gitblame.dateFormatStyle": {
+                    "type": "string",
+                    "default": "YYYY-MM-DD",
+                    "enum": [
+                        "YYYY-MM-DD",
+                        "Y/M/D",
+                        "DD.MM.YYYY",
+                        "relative"
+                    ],
+                    "description": "The date format for blame annotations."
+                },
+                "gitblame.authorNameStyle": {
+                    "type": "string",
+                    "default": "full",
+                    "enum": [
+                        "full",
+                        "first",
+                        "last"
+                    ],
+                    "description": "Whether to show the Commit Author's full name, or only first/last"
+                }
+            }
+        }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
@@ -70,13 +106,16 @@
         "test": "vscode-test"
     },
     "devDependencies": {
+        "@types/node": "^16.18.126",
         "@types/vscode": "^1.80.0",
-        "@types/node": "^16.11.7",
         "@typescript-eslint/eslint-plugin": "^5.42.0",
         "@typescript-eslint/parser": "^5.42.0",
-        "eslint": "^8.26.0",
-        "typescript": "^4.8.4",
         "@vscode/test-cli": "^0.0.11",
-        "@vscode/test-electron": "^2.5.2"
+        "@vscode/test-electron": "^2.5.2",
+        "eslint": "^8.26.0",
+        "typescript": "^4.8.4"
+    },
+    "dependencies": {
+        "timeago.js": "^4.0.2"
     }
 }

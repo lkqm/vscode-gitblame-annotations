@@ -308,7 +308,7 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
         } else if (line.startsWith('author-mail ')) {
             currentBlock.mail = line.substring(12);
         } else if (line.startsWith('author-time ')) {
-            const timestamp = parseInt(line.substring(11));
+            const timestamp = parseInt(line.substring(12));
             currentBlock.timestamp = timestamp;
         } else if (line.startsWith('summary ')) {
             currentBlock.summary = line.substring(8);

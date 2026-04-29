@@ -2,17 +2,20 @@
     "compilerOptions": {
         "module": "commonjs",
         "target": "ES2020",
+        "rootDir": "src",
         "outDir": "out",
         "lib": [
-            "ES2020"
+            "ES2020",
+            "DOM" // for timeago.js
         ],
         "sourceMap": true,
-        "rootDir": "src",
         "strict": true,
-        "esModuleInterop": true
+        "esModuleInterop": true,
+        "types": [ "node" ]
     },
     "exclude": [
         "node_modules",
-        ".vscode-test"
+        ".vscode-test",
+        "out"
     ]
 }

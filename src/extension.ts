@@ -1,8 +1,9 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
-import { Blame, Change, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase, buildCommitUrl } from './git';
-
+import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
+import type { AuthorNameStyle, DateFormatStyle } from './utils';
+import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -12,12 +13,22 @@ const fileDecorations = new Map<string, {
     hoverProvider: vscode.Disposable | undefined,
     blames: Blame[] | undefined,
     lineBlames: Map<number, Blame> | undefined,
+    highlightDecorationType: vscode.TextEditorDecorationType | undefined,
 }>();
+
+
+interface BlameDisplayConfig {
+    mergeCommitLines: boolean,
+    highlightChangedLines: boolean,
+    dateFormatStyle: DateFormatStyle,
+    authorNameStyle: AuthorNameStyle
+}
+
 const MaxTitleWidth = 25;
 
 /**
- * 激活插件
- */
+* 激活插件
+*/
 export function activate(context: vscode.ExtensionContext) {
     registerCommands(context);
     registerListeners(context);
@@ -25,15 +36,27 @@ export function activate(context: vscode.ExtensionContext) {
     if (editor) {
         updateMenuContext(editor.document);
     }
+
+    // Dev-only: auto-reload extension host when compiled output changes
+    if (context.extensionMode === vscode.ExtensionMode.Development) {
+        const watcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(context.extensionUri, 'out/**/*.js')
+        );
+        watcher.onDidChange(() => {
+            vscode.commands.executeCommand('workbench.action.reloadWindow');
+        });
+        context.subscriptions.push(watcher);
+    }
 }
 
 /**
- * 卸载插件
- */
+* 卸载插件
+*/
 export function deactivate() {
     for (const [_, decorations] of fileDecorations) {
         decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
+        decorations.highlightDecorationType?.dispose();
     }
     fileDecorations.clear();
     fileBlameStates.clear();
@@ -41,8 +64,8 @@ export function deactivate() {
 
 
 /**
- * 注册命令
- */
+* 注册命令
+*/
 function registerCommands(context: vscode.ExtensionContext) {
 
     // Toggle blame annotations
@@ -108,12 +131,18 @@ function registerCommands(context: vscode.ExtensionContext) {
             await vscode.commands.executeCommand('_workbench.openMultiDiffEditor', { multiDiffSourceUri, title, resources });
         }
     });
-    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand);
+
+    const copyHashCommand = vscode.commands.registerCommand('git.blame.copyHash', async (hash: string) => {
+        if (!hash) return;
+        vscode.env.clipboard.writeText(hash);
+    });
+
+    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand);
 }
 
 /**
- * 注册事件
- */
+* 注册事件
+*/
 function registerListeners(context: vscode.ExtensionContext) {
 
     // Editor Change
@@ -123,7 +152,6 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    // Visible Editor Change
     const visibleEditorChangeSubscription = vscode.window.onDidChangeVisibleTextEditors(editors => {
         for (const editor of editors) {
             const fileBlameState = fileBlameStates.get(editor.document.uri.toString());
@@ -142,6 +170,7 @@ function registerListeners(context: vscode.ExtensionContext) {
             fileDecorations.delete(documentUri);
             decorations.decorationTypes?.forEach(type => type.dispose());
             decorations.hoverProvider?.dispose();
+            decorations.highlightDecorationType?.dispose();
         }
     });
 
@@ -169,12 +198,47 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription, saveDocumentSubscription, changeDocumentSubscription);
+    // Highlight all lines of the commit under the cursor
+    const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
+        const enabled = vscode.workspace.getConfiguration('gitblame').get("highlightChangedLines", false) as boolean;
+        if (!enabled) return;
+        
+        const editor = event.textEditor;
+        const uri = editor.document.uri.toString();
+        if (!fileBlameStates.get(uri)) return;
+        const state = fileDecorations.get(uri);
+        if (!state) return;
+
+        if (!state.highlightDecorationType) {
+            state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
+                isWholeLine: true,
+                backgroundColor: "rgba(0, 188, 242, 0.2)"
+            });
+        }
+
+        const lineIdx = event.selections[0].active.line;
+        const blame = state.lineBlames?.get(lineIdx);
+
+        if (!blame?.commited) {
+            editor.setDecorations(state.highlightDecorationType, []);
+            return;
+        }
+
+        const ranges = state.blames
+            ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
+            .filter((r): r is vscode.Range => r !== null) ?? [];
+        editor.setDecorations(state.highlightDecorationType, ranges);
+    });
+
+    context.subscriptions.push(
+        editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription,
+        saveDocumentSubscription, changeDocumentSubscription, selectionChangeSubscription
+    );
 }
 
 /**
- * 显示装饰器
- */
+* 显示装饰器
+*/
 async function showDecorations(editors: vscode.TextEditor[], reload: boolean = false): Promise<boolean> {
     const document = editors[0].document;
     const documentUri = document.uri.toString();
@@ -204,9 +268,11 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             hoverProvider: undefined,
             blames: undefined,
             lineBlames: undefined,
+            highlightDecorationType: undefined,
         };
+
+        fileDecorations.set(documentUri, decorations);
     }
-    fileDecorations.set(documentUri, decorations);
 
     try {
         // Blames
@@ -223,7 +289,8 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         if (!decorations.decorationTypes) {
             decorations.decorationTypes = [];
         }
-        decorations.decorationOptions = buildDecorationOptions(blames);
+
+        decorations.decorationOptions = buildDecorationOptions(blames, document.fileName, repoWebBase);
         for (const editor of editors) {
             const decorationNum = decorations.decorationOptions.length;
             for (let i = 0; i < decorationNum; i++) {
@@ -240,29 +307,13 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             { scheme: 'file', pattern: document.fileName },
             {
                 async provideHover(document: vscode.TextDocument, position: vscode.Position) {
-                    if (position.character > 0) {
-                        return undefined;
-                    }
+                    if (position.character > 0) return undefined;
                     const blame = fileDecorations.get(documentUri)?.lineBlames?.get(position.line);
-                    if (blame && blame.commited) {
-                        const date = new Date(blame.timestamp * 1000);
-                        const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+                    if (!blame) return undefined;
 
-                        const content = new vscode.MarkdownString();
-                        const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
-                        if (commitUrl) {
-                            const viewText = gitPlatform ?`View on ${gitPlatform}`:'Open in Browser';
-                            content.appendMarkdown(`[${viewText}](${commitUrl})  \n`);
-                        }
-                        content.appendMarkdown(`commit: [${blame.commit}](command:git.blame.viewCommit?${encodeURIComponent(JSON.stringify([blame.commit, blame.summary, document.fileName]))})  \n`);
-                        content.appendMarkdown(`Author: ${blame.author}  \n`);
-                        content.appendMarkdown(`Date: ${dateText}  \n`);
-                        if (blame.summary) {
-                            content.appendMarkdown(`\n\n${blame.summary}`);
-                        }
-                        content.isTrusted = true;
-                        return new vscode.Hover(content);
-                    }
+                    const content = buildHoverMessage(blame, document.fileName, repoWebBase);
+                    if (!content) return undefined;
+                    return new vscode.Hover(content, new vscode.Range(position.line, 0, position.line, 0))
                 }
             }
         );
@@ -279,8 +330,8 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
 
 
 /**
- * 隐藏装饰器
- */
+* 隐藏装饰器
+*/
 async function hideDecorations(document: vscode.TextDocument): Promise<boolean> {
     const documentUri = document.uri.toString();
     fileBlameStates.set(documentUri, false);
@@ -289,14 +340,15 @@ async function hideDecorations(document: vscode.TextDocument): Promise<boolean> 
         fileDecorations.delete(documentUri);
         decorations.decorationTypes?.forEach(type => type.dispose());
         decorations.hoverProvider?.dispose();
+        decorations.highlightDecorationType?.dispose();
         return true;
     }
     return false;
 }
 
 /**
- * 更新装饰器
- */
+* 更新装饰器
+*/
 async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vscode.TextDocumentChangeEvent) {
     const documentUri = editors[0].document.uri.toString();
     const decorations = fileDecorations.get(documentUri);
@@ -315,6 +367,7 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
         if (addedLines.length === 0 && deletedLines.length === 0 && modifiedLines.length === 0) {
             continue;
         }
+
         if (modifiedLines.length > 0) {
             for (let i = 0; i < modifiedLines.length; i++) {
                 if (blames[modifiedLines[i]].commited) {
@@ -324,12 +377,14 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
                 }
             }
         }
+
         if (deletedLines.length > 0) {
             shouldUpdate = true;
             for (let i = deletedLines.length - 1; i >= 0; i--) {
                 blames.splice(deletedLines[i], 1);
             }
         }
+
         if (addedLines.length > 0) {
             shouldUpdate = true;
             for (let i = 0; i < addedLines.length; i++) {
@@ -337,29 +392,34 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
             }
         }
     }
+
     if (!shouldUpdate) {
         return;
     }
 
+    const repositoryRoot = await getGitRepository(editors[0].document.fileName);
+    const repoWebBase = repositoryRoot ? await getRepoWebBase(repositoryRoot) : "";
+
     // update decorations
-    decorations.decorationOptions = buildDecorationOptions(blames);
+    decorations.decorationOptions = buildDecorationOptions(blames, editors[0].document.fileName, repoWebBase);
     for (const editor of editors) {
         const decorationNum = decorations.decorationOptions.length;
         for (let i = 0; i < decorationNum; i++) {
             if (i >= decorations.decorationTypes.length) {
                 decorations.decorationTypes.push(vscode.window.createTextEditorDecorationType({}));
             }
+
             editor.setDecorations(decorations.decorationTypes[i], decorations.decorationOptions[i]);
         }
     }
+
     decorations.blames = blames;
     decorations.lineBlames = new Map(blames.map((blame, index) => [index, blame]));
 }
 
-
 /**
- * 更新上下文菜单
- */
+* 更新上下文菜单
+*/
 async function updateMenuContext(document: vscode.TextDocument, currentState: boolean | undefined = undefined) {
     // Skip diff editor
     if (document.uri.scheme !== 'file') {
@@ -383,6 +443,7 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
             vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
             return;
         }
+
         // check file blame state
         const fileBlameState = fileBlameStates.get(document.uri.toString());
         vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !fileBlameState);
@@ -392,14 +453,23 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
         vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
         vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
     }
-
 }
 
-function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
-    const maxWidth = fillTitles(blames);
+function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: string): vscode.DecorationOptions[][] {
+    const cfg = vscode.workspace.getConfiguration('gitblame');
+
+    const config: BlameDisplayConfig = {
+        mergeCommitLines: cfg.get('mergeCommitLines', false),
+        highlightChangedLines: cfg.get('highlightChangedLines', false),
+        dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
+        authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
+    };
+
+    const maxWidth = fillTitles(blames, config);
     if (maxWidth <= 0) {
         return [];
     }
+
     const singleCommit = new Set(blames.filter(b => b.commited).map(b => b.commit)).size === 1;
 
     const decorationOptions: vscode.DecorationOptions[] = [];
@@ -411,25 +481,26 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
             color = getCommitColor(blame.commit, blame.timestamp);
             colorsMap.set(blame.commit, color);
         }
+
         const range = new vscode.Range(
             new vscode.Position(index, 0),
             new vscode.Position(index, 0)
         );
-        const option = {
+        const option: vscode.DecorationOptions = {
             range,
             renderOptions: {
                 before: {
                     contentText: `\u2007${blame.title}\u2007`,
-                    color: '#666666',
+                    color: new vscode.ThemeColor('list.deemphasizedForeground'),
                     width: `${maxWidth + 2}ch`,
                     fontWeight: 'normal',
-                    fontStyle: 'normal',
+                    fontStyle: 'normal'
                 }
             }
         };
         decorationOptions.push(option);
 
-        const optionHeatmap = {
+        const optionHeatmap: vscode.DecorationOptions = {
             range,
             renderOptions: {
                 before: {
@@ -450,8 +521,8 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
             }
         };
         if (singleCommit || !blame.commited) {
-            optionHeatmap.renderOptions.light.before.backgroundColor = 'transparent';
-            optionHeatmap.renderOptions.dark.before.backgroundColor = 'transparent';
+            optionHeatmap.renderOptions!.light!.before!.backgroundColor = 'transparent';
+            optionHeatmap.renderOptions!.dark!.before!.backgroundColor = 'transparent';
         }
         decorationOptionsHeatmap.push(optionHeatmap);
     });
@@ -459,44 +530,81 @@ function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
     return [decorationOptions, decorationOptionsHeatmap];
 }
 
+function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string): vscode.MarkdownString | undefined {
+    if (!blame.commited) {
+        return undefined;
+    }
 
-function fillTitles(blames: Blame[]): number {
+    const rawStyle = vscode.workspace.getConfiguration('gitblame').get('dateFormatStyle', defaultDateFormatStyle);
+    const activeStyle: DateFormatStyle = VALID_DATEFORMATSTYLES.includes(rawStyle as DateFormatStyle)
+        ? (rawStyle as DateFormatStyle)
+        : defaultDateFormatStyle;
+
+    const relativeDate = formatDate(blame.timestamp, 'relative')
+    const hoverStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
+    const dateText = formatDate(blame.timestamp, hoverStyle);
+
+    const content = new vscode.MarkdownString();
+    const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);
+    let viewExternal = '';
+    content.appendMarkdown(`**[${blame.author}](mailto:${blame.mail})**  \n`);
+    content.appendMarkdown(`_${relativeDate}_ (${dateText})  \n`)
+
+    if (blame.summary) {
+        content.appendMarkdown(`\n\n${blame.summary}`);
+    }
+
+    if (commitUrl) {
+        const viewText = gitPlatform ? `Open on ${gitPlatform}` : 'Open in Browser';
+        viewExternal = ` | [${viewText}](${commitUrl})`
+    }
+
+    const openCommitUri = encodeURIComponent(JSON.stringify([blame.commit, blame.summary, fileName]))
+    const commit7 = `[${blame.commit.slice(0, 8)}](command:git.blame.viewCommit?${openCommitUri})`
+
+    const copyIcon = `[$(copy)](command:git.blame.copyHash?${encodeURIComponent(JSON.stringify([blame.commit]))})`
+
+    content.appendMarkdown("\n\n---\n\n")
+    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}  \n`);
+
+    content.isTrusted = true;
+    content.supportThemeIcons = true;
+    return content;
+}
+
+function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     let maxWidth = 0;
 
-    // calculate date width
-    const lineDates = new Map<number, string>();
-    const maxDateWidth = blames.reduce((maxWidth, line) => {
-        if (!line.commited) {
-            return maxWidth;
-        }
-        const date = new Date(line.timestamp * 1000);
-        const dateText = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-        lineDates.set(line.line, dateText);
-        return Math.max(maxWidth, dateText.length);
+    // Compute per-line timestamp strings and the max width for alignment padding
+    const lineTimestampText = new Map<number, string>();
+    const maxTimestampWidth = blames.reduce((maxW, line) => {
+        if (!line.commited) { return maxW; }
+        const text = formatDate(line.timestamp, config.dateFormatStyle)
+        lineTimestampText.set(line.line, text);
+        return Math.max(maxW, text.length);
     }, 8);
 
     const textWidths = new Map<string, { width: number, widths: number[] }>();
     blames.forEach(line => {
         if (line.commited) {
-            const dateText = lineDates.get(line.line)?.padEnd(maxDateWidth, '\u2007');
-            line.title = `${dateText} ${line.author}`;
+            const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
+            const remainingWidth = MaxTitleWidth - maxTimestampWidth - 1;
+            const formattedAuthor = formatAuthor(line.author, config.authorNameStyle).padEnd(remainingWidth, '\u2007');
+
+            line.title = `${tsText} ${formattedAuthor}`
         } else {
             line.title = '';
         }
 
-        // calculate title width
         if (!textWidths.has(line.commit)) {
             const { width, widths } = getTextWidth(line.title);
             textWidths.set(line.commit, { width, widths });
-            if (width > maxWidth) {
-                maxWidth = width;
-            }
+            if (width > maxWidth) { maxWidth = width; }
         }
     });
 
     if (maxWidth > MaxTitleWidth) {
         maxWidth = MaxTitleWidth;
-        // trancate title
         blames.forEach(line => {
             const { width, widths } = textWidths.get(line.commit) || { width: 0, widths: [] };
             if (width > maxWidth) {
@@ -505,208 +613,14 @@ function fillTitles(blames: Blame[]): number {
         });
     }
 
+    // Blank non-first lines of each consecutive same-commit block
+    if (config.mergeCommitLines) {
+        for (let i = 1; i < blames.length; i++) {
+            if (blames[i].commited && blames[i].commit === blames[i - 1].commit) {
+                blames[i].title = '';
+            }
+        }
+    }
+
     return maxWidth;
-}
-
-// ------------------------------------------------------------
-// utils
-// ------------------------------------------------------------
-
-function toMultiFileDiffEditorUris(change: Change, originalRef: string, modifiedRef: string): { originalUri: Uri | undefined; modifiedUri: Uri | undefined } {
-    switch (change.status) {
-        case "index_added":
-            return {
-                originalUri: undefined,
-                modifiedUri: toGitUri(change.uri, modifiedRef)
-            };
-        case "deleted":
-            return {
-                originalUri: toGitUri(change.uri, originalRef),
-                modifiedUri: undefined
-            };
-        case "index_renamed":
-            return {
-                originalUri: toGitUri(change.originalUri, originalRef),
-                modifiedUri: toGitUri(change.uri, modifiedRef)
-            };
-        default:
-            return {
-                originalUri: toGitUri(change.uri, originalRef),
-                modifiedUri: toGitUri(change.uri, modifiedRef)
-            };
-    }
-}
-
-function toGitUri(uri: Uri, ref: string, options: { submoduleOf?: string, replaceFileExtension?: boolean, scheme?: string } = {}): Uri {
-    const params = {
-        path: uri.fsPath,
-        submoduleOf: "",
-        ref
-    };
-
-    if (options.submoduleOf) {
-        params.submoduleOf = options.submoduleOf;
-    }
-
-    let path = uri.path;
-
-    if (options.replaceFileExtension) {
-        path = `${path}.git`;
-    } else if (options.submoduleOf) {
-        path = `${path}.diff`;
-    }
-
-    return uri.with({ scheme: options.scheme ?? 'git', path, query: JSON.stringify(params) });
-}
-
-
-function getTextWidth(text: string): { width: number, widths: number[] } {
-    let width = 0;
-    const widths = [];
-    for (const char of text) {
-        const w = getCharacterWidth(char);
-        widths.push(w);
-        width += w;
-    }
-    return { width, widths };
-}
-
-
-function getCharacterWidth(char: string): number {
-    const code = char.charCodeAt(0);
-
-    // 东亚文字 (中文、日文、韩文等)
-    if ((code >= 0x3000 && code <= 0x9FFF) ||
-        (code >= 0xAC00 && code <= 0xD7AF) ||
-        (code >= 0xF900 && code <= 0xFAFF) ||
-        (code >= 0xFF00 && code <= 0xFFEF)) {
-        return 2;
-    }
-
-    // 表情符号和特殊符号
-    if (code >= 0x1F300 && code <= 0x1F9FF) {
-        return 2;
-    }
-
-    // 组合字符标记
-    if (code >= 0x0300 && code <= 0x036F) {
-        return 0;
-    }
-
-    return 1;
-}
-
-function trancateText(text: string, maxWidth: number, widths: number[]): string {
-    let truncatedText = '';
-    let currentWidth = 0;
-
-    for (let i = 0; i < widths.length; i++) {
-        if (currentWidth + widths[i] <= maxWidth) {
-            truncatedText += text[i];
-            currentWidth += widths[i];
-        } else {
-            break;
-        }
-    }
-    return truncatedText;
-}
-
-function getCommitColor(commit: string, timestamp: number): { lightColor: string, darkColor: string } {
-    // hue
-    let hash = 0;
-    for (let i = 0; i < commit.length; i++) {
-        hash = commit.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    const h = (hash * 137.508) % 360;
-
-    // saturation
-    const minSaturation = 35, maxSaturation = 90, decayDays = 20;
-    let daysAgo = Math.floor((Date.now() / 1000 - timestamp) / (24 * 60 * 60));
-    daysAgo = Math.max(daysAgo, 0);
-    const decay = Math.exp(-daysAgo / 20);
-    const saturation = Math.round(minSaturation + (maxSaturation - minSaturation) * decay);
-
-    const darkColor = `hsl(${h}, ${saturation}%, 50%)`;
-    const lightColor = `hsl(${h}, ${saturation}%, 50%)`;
-    return { lightColor, darkColor };
-}
-
-function buildUncommitBlame(line: number): Blame {
-    return {
-        line: line,
-        commit: '0000000000000000000000000000000000000000',
-        author: '',
-        mail: '',
-        timestamp: 0,
-        summary: '',
-        commited: false,
-        title: '',
-    };
-}
-
-
-function resolveChange(change: vscode.TextDocumentContentChangeEvent) {
-    const addedLines = [];
-    const deletedLines = [];
-    const modifiedLines = [];
-    const changeText = change.text;
-    const startLine = change.range.start.line;
-    const endLine = change.range.end.line;
-    const startLineCharacter = change.range.start.character;
-
-    if (changeText.length === 0) {
-        // delete characters
-        const diffLine = endLine - startLine;
-        if (diffLine === 1) {
-            deletedLines.push(startLine + 1);
-        } else if (diffLine > 1) {
-            const start = startLineCharacter > 0 ? startLine + 1 : startLine;
-            const end = start + diffLine - 1;
-            for (let i = start; i <= end; i++) {
-                deletedLines.push(i);
-            }
-        } else if (diffLine === 0) {
-            modifiedLines.push(startLine);
-        }
-    } else {
-        const trimedChangeText = changeText.replace(/ +$/, '');
-        if (trimedChangeText === '\n' || trimedChangeText === '\r\n') {
-            // add a new line
-            addedLines.push(startLineCharacter > 0 ? startLine + 1 : startLine);
-        } else {
-            // add or modify characters
-            const crossLines = endLine - startLine + 1;
-            const textLines = changeText.split(/\r?\n/).length;
-            const diff = textLines - crossLines;
-            if (diff > 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine; i++) {
-                    modifiedLines.push(i);
-                }
-                // add lines
-                const start = endLine + 1;
-                const end = endLine + diff;
-                for (let i = start; i <= end; i++) {
-                    addedLines.push(i);
-                }
-            } else if (diff < 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine + diff; i++) {
-                    modifiedLines.push(i);
-                }
-                // delete lines
-                const start = endLine + diff + 1;
-                const end = endLine;
-                for (let i = start; i <= end; i++) {
-                    deletedLines.push(i);
-                }
-            } else if (diff === 0) {
-                // modify lines
-                for (let i = startLine; i <= endLine; i++) {
-                    modifiedLines.push(i);
-                }
-            }
-        }
-    }
-    return { addedLines, deletedLines, modifiedLines };
 }
