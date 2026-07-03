@@ -75,7 +75,7 @@
                 },
                 "gitblame.dateFormatStyle": {
                     "type": "string",
-                    "default": "YYYY-MM-DD",
+                    "default": "Y/M/D",
                     "enum": [
                         "YYYY-MM-DD",
                         "Y/M/D",

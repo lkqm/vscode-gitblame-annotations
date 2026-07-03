@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
-import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
+import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toGitUri, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -15,6 +15,7 @@ const fileDecorations = new Map<string, {
     lineBlames: Map<number, Blame> | undefined,
     highlightDecorationType: vscode.TextEditorDecorationType | undefined,
 }>();
+const gitDocumentRepositories = new Map<string, string>();
 
 
 interface BlameDisplayConfig {
@@ -22,6 +23,19 @@ interface BlameDisplayConfig {
     highlightChangedLines: boolean,
     dateFormatStyle: DateFormatStyle,
     authorNameStyle: AuthorNameStyle
+}
+
+interface BlameDocumentContext {
+    fileName: string,
+    ref?: string,
+    repositoryRoot: string,
+}
+
+interface GitDocumentParams {
+    path?: string,
+    ref?: string,
+    submoduleOf?: string,
+    repositoryRoot?: string,
 }
 
 const MaxTitleWidth = 25;
@@ -137,7 +151,38 @@ function registerCommands(context: vscode.ExtensionContext) {
         vscode.env.clipboard.writeText(hash);
     });
 
-    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand);
+    const annotatePreviousRevisionCommand = vscode.commands.registerCommand('git.blame.annotatePreviousRevision', async (previousCommit: string, previousFile: string = "", fileName: string = "", repositoryRoot: string = "", languageId: string = "") => {
+        if (!previousCommit || !fileName) {
+            return;
+        }
+
+        try {
+            const repoRoot = repositoryRoot || await getGitRepository(fileName);
+            if (!repoRoot) {
+                return;
+            }
+
+            const previousFileName = previousFile
+                ? (path.isAbsolute(previousFile) ? previousFile : path.join(repoRoot, previousFile))
+                : fileName;
+            const uri = toNamedGitUri(previousFileName, previousCommit, repoRoot);
+            gitDocumentRepositories.set(uri.toString(), repoRoot);
+            let editor = await vscode.window.showTextDocument(uri, { preview: false });
+            if (languageId && editor.document.languageId !== languageId) {
+                const document = await vscode.languages.setTextDocumentLanguage(editor.document, languageId);
+                editor = await vscode.window.showTextDocument(document, { preview: false });
+                gitDocumentRepositories.set(editor.document.uri.toString(), repoRoot);
+            }
+            const successed = await showDecorations([editor], true);
+            if (successed) {
+                updateMenuContext(editor.document, true);
+            }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`${error.message}`);
+        }
+    });
+
+    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand, annotatePreviousRevisionCommand);
 }
 
 /**
@@ -165,6 +210,7 @@ function registerListeners(context: vscode.ExtensionContext) {
     const closeDocumentSubscription = vscode.workspace.onDidCloseTextDocument(document => {
         const documentUri = document.uri.toString();
         fileBlameStates.delete(documentUri);
+        gitDocumentRepositories.delete(documentUri);
         const decorations = fileDecorations.get(documentUri);
         if (decorations) {
             fileDecorations.delete(documentUri);
@@ -202,7 +248,7 @@ function registerListeners(context: vscode.ExtensionContext) {
     const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
         const enabled = vscode.workspace.getConfiguration('gitblame').get("highlightChangedLines", false) as boolean;
         if (!enabled) return;
-        
+
         const editor = event.textEditor;
         const uri = editor.document.uri.toString();
         if (!fileBlameStates.get(uri)) return;
@@ -245,7 +291,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
     let decorations = fileDecorations.get(documentUri);
 
     // Skip diff editor
-    if (document.uri.scheme !== 'file') {
+    if (document.uri.scheme !== 'file' && document.uri.scheme !== 'git') {
         return false;
     }
 
@@ -275,22 +321,27 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
     }
 
     try {
+        const blameContext = await getBlameDocumentContext(document);
+        if (!blameContext) {
+            return false;
+        }
+
         // Blames
-        const blames = await getBlames(path.dirname(document.fileName), document.fileName);
+        const blameFile = getRepositoryRelativePath(blameContext.repositoryRoot, blameContext.fileName);
+        const blames = await getBlames(blameContext.repositoryRoot, blameFile, blameContext.ref);
         for (let i = blames.length; i < document.lineCount; i++) {
             blames.push(buildUncommitBlame(i + 1));
         }
 
         // Repo web base for commit links
-        const repositoryRoot = await getGitRepository(document.fileName);
-        const repoWebBase = repositoryRoot ? await getRepoWebBase(repositoryRoot) : "";
+        const repoWebBase = blameContext.repositoryRoot ? await getRepoWebBase(blameContext.repositoryRoot) : "";
 
         // Decorations
         if (!decorations.decorationTypes) {
             decorations.decorationTypes = [];
         }
 
-        decorations.decorationOptions = buildDecorationOptions(blames, document.fileName, repoWebBase);
+        decorations.decorationOptions = buildDecorationOptions(blames, blameContext.fileName, repoWebBase);
         for (const editor of editors) {
             const decorationNum = decorations.decorationOptions.length;
             for (let i = 0; i < decorationNum; i++) {
@@ -304,27 +355,113 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         decorations.lineBlames = new Map(blames.map((blame, index) => [index, blame]));
         decorations.hoverProvider?.dispose();
         decorations.hoverProvider = vscode.languages.registerHoverProvider(
-            { scheme: 'file', pattern: document.fileName },
+            {
+                scheme: document.uri.scheme,
+                pattern: document.uri.fsPath,
+            },
             {
                 async provideHover(document: vscode.TextDocument, position: vscode.Position) {
-                    if (position.character > 0) return undefined;
+                    if (document.uri.toString() !== documentUri) {
+                        return undefined;
+                    }
+                    if (position.character > 0) {
+                        return undefined;
+                    }
                     const blame = fileDecorations.get(documentUri)?.lineBlames?.get(position.line);
-                    if (!blame) return undefined;
+                    if (!blame) {
+                        return undefined;
+                    }
 
-                    const content = buildHoverMessage(blame, document.fileName, repoWebBase);
-                    if (!content) return undefined;
-                    return new vscode.Hover(content, new vscode.Range(position.line, 0, position.line, 0))
+                    const content = buildHoverMessage(blame, blameContext.fileName, repoWebBase, blameContext.repositoryRoot, document.languageId);
+                    if (!content) {
+                        return undefined;
+                    }
+                    return new vscode.Hover(content, new vscode.Range(position.line, 0, position.line, 0));
                 }
             }
         );
         fileBlameStates.set(documentUri, true);
         return true;
     } catch (error: any) {
-        if (!error.message.includes("code 128")) {
+        if (document.uri.scheme === 'git' || !error.message.includes("code 128")) {
             vscode.window.showErrorMessage(`${error.message}`);
         }
         return false;
     }
+}
+
+async function getBlameDocumentContext(document: vscode.TextDocument): Promise<BlameDocumentContext | undefined> {
+    if (document.uri.scheme === 'file') {
+        const repositoryRoot = await getGitRepository(document.fileName);
+        if (!repositoryRoot) {
+            return undefined;
+        }
+
+        return {
+            fileName: document.fileName,
+            repositoryRoot,
+        };
+    }
+
+    if (document.uri.scheme === 'git') {
+        try {
+            const params = JSON.parse(document.uri.query) as GitDocumentParams;
+            if (!params.path || !params.ref) {
+                return undefined;
+            }
+
+            const repositoryRoot = params.repositoryRoot
+                || gitDocumentRepositories.get(document.uri.toString())
+                || findWorkspaceRootForPath(params.path)
+                || await getGitRepository(params.path);
+            if (!repositoryRoot) {
+                return undefined;
+            }
+
+            return {
+                fileName: params.path,
+                ref: params.ref,
+                repositoryRoot,
+            };
+        } catch (_) {
+            return undefined;
+        }
+    }
+
+    return undefined;
+}
+
+function getRepositoryRelativePath(repositoryRoot: string, fileName: string): string {
+    const relativePath = path.relative(repositoryRoot, fileName);
+    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return fileName;
+    }
+
+    return relativePath;
+}
+
+function toNamedGitUri(fileName: string, ref: string, repositoryRoot: string): Uri {
+    const uri = toGitUri(Uri.file(fileName), ref);
+    const parsedPath = path.posix.parse(uri.path);
+    const displayPath = path.posix.join(parsedPath.dir, `${parsedPath.base} (${ref.substring(0, 8)})`);
+    const params = JSON.parse(uri.query) as GitDocumentParams;
+    return uri.with({
+        path: displayPath,
+        query: JSON.stringify({ ...params, repositoryRoot }),
+    });
+}
+
+function findWorkspaceRootForPath(fileName: string): string | undefined {
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    return workspaceFolders
+        .map(folder => folder.uri.fsPath)
+        .filter(root => isPathInside(root, fileName))
+        .sort((a, b) => b.length - a.length)[0];
+}
+
+function isPathInside(root: string, fileName: string): boolean {
+    const relativePath = path.relative(root, fileName);
+    return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
 
@@ -421,38 +558,32 @@ async function updateDecorationsOnChange(editors: vscode.TextEditor[], event: vs
 * 更新上下文菜单
 */
 async function updateMenuContext(document: vscode.TextDocument, currentState: boolean | undefined = undefined) {
-    // Skip diff editor
-    if (document.uri.scheme !== 'file') {
-        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
-        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
-        return;
-    }
-
     if (currentState !== undefined) {
         vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !currentState);
         vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', currentState);
         return;
     }
 
-    try {
-        // check file tracked
-        const fileStatus = await getFileStatus(path.dirname(document.fileName), document.fileName);
-        const isTracked = fileStatus !== "untracked" && fileStatus !== "index_add";
-        if (!isTracked) {
-            vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
-            vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
-            return;
+    let supportsBlameMenu = false;
+    if (document.uri.scheme === 'git') {
+        try {
+            const params = JSON.parse(document.uri.query) as GitDocumentParams;
+            supportsBlameMenu = !!params.path && !!params.ref;
+        } catch (_) {
+            supportsBlameMenu = false;
         }
-
-        // check file blame state
-        const fileBlameState = fileBlameStates.get(document.uri.toString());
-        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', !fileBlameState);
-        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', fileBlameState);
-    } catch (error) {
-        // check git repository
-        vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', false);
-        vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', false);
+    } else if (document.uri.scheme === 'file') {
+        try {
+            const fileStatus = await getFileStatus(path.dirname(document.fileName), document.fileName);
+            supportsBlameMenu = fileStatus !== "untracked" && fileStatus !== "index_add";
+        } catch (_) {
+            supportsBlameMenu = false;
+        }
     }
+
+    const fileBlameState = fileBlameStates.get(document.uri.toString()) || false;
+    vscode.commands.executeCommand('setContext', 'gitblame.showMenuState', supportsBlameMenu && !fileBlameState);
+    vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', supportsBlameMenu && fileBlameState);
 }
 
 function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: string): vscode.DecorationOptions[][] {
@@ -530,7 +661,7 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
     return [decorationOptions, decorationOptionsHeatmap];
 }
 
-function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string): vscode.MarkdownString | undefined {
+function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, repositoryRoot: string, languageId: string): vscode.MarkdownString | undefined {
     if (!blame.commited) {
         return undefined;
     }
@@ -563,9 +694,14 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string):
     const commit7 = `[${blame.commit.slice(0, 8)}](command:git.blame.viewCommit?${openCommitUri})`
 
     const copyIcon = `[$(copy)](command:git.blame.copyHash?${encodeURIComponent(JSON.stringify([blame.commit]))})`
+    let annotatePreviousRevision = '';
+    if (blame.previousCommit) {
+        const annotatePreviousRevisionUri = encodeURIComponent(JSON.stringify([blame.previousCommit, blame.previousFile ?? "", fileName, repositoryRoot, languageId]));
+        annotatePreviousRevision = ` | [Previous Revision](command:git.blame.annotatePreviousRevision?${annotatePreviousRevisionUri})`;
+    }
 
     content.appendMarkdown("\n\n---\n\n")
-    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}  \n`);
+    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}${annotatePreviousRevision}  \n`);
 
     content.isTrusted = true;
     content.supportThemeIcons = true;

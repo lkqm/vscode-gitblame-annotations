@@ -11,6 +11,8 @@ export interface Blame {
     timestamp: number;
     commited: boolean;
     title: string;
+    previousCommit?: string;
+    previousFile?: string;
 }
 
 export interface CommitBlame {
@@ -22,6 +24,8 @@ export interface CommitBlame {
     timestamp: number;
     commited: boolean;
     title: string;
+    previousCommit?: string;
+    previousFile?: string;
 }
 
 export interface Change {
@@ -79,8 +83,13 @@ export async function getGitRepository(filePath: string): Promise<string> {
 /**
  * 获取文件的 blame 信息
  */
-export async function getBlames(workDir: string, file: string): Promise<Blame[]> {
-    const blame = await exec(workDir, ['blame', '--incremental', file]);
+export async function getBlames(workDir: string, file: string, ref?: string): Promise<Blame[]> {
+    const args = ['blame', '--incremental'];
+    if (ref) {
+        args.push(ref);
+    }
+    args.push('--', file);
+    const blame = await exec(workDir, args);
     const { totalLines, blames } = parseBlames(blame);
     return toBlames(totalLines, blames);
 }
@@ -265,6 +274,8 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
         timestamp: 0,
         commited: false,
         title: '',
+        previousCommit: undefined,
+        previousFile: undefined,
     };
     const commitToBlock = new Map<string, CommitBlame>();
     let newBlock = true;
@@ -293,6 +304,8 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
                     timestamp: 0,
                     commited: (commit !== '0000000000000000000000000000000000000000'),
                     title: '',
+                    previousCommit: undefined,
+                    previousFile: undefined,
                 };
                 blames.push(currentBlock);
                 commitToBlock.set(commit, currentBlock);
@@ -312,6 +325,13 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
             currentBlock.timestamp = timestamp;
         } else if (line.startsWith('summary ')) {
             currentBlock.summary = line.substring(8);
+        } else if (line.startsWith('previous ')) {
+            const previous = line.substring(9);
+            const firstSpaceIndex = previous.indexOf(' ');
+            if (firstSpaceIndex > 0 && !currentBlock.previousCommit) {
+                currentBlock.previousCommit = previous.substring(0, firstSpaceIndex);
+                currentBlock.previousFile = previous.substring(firstSpaceIndex + 1);
+            }
         } else if (line.startsWith('filename ')) {
             newBlock = true;
         }
