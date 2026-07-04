@@ -2,7 +2,7 @@
     "name": "gitblame-annotations",
     "displayName": "Git Blame Annotations",
     "description": "Display git blame in editor gutter like JetBrains IDEs",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "publisher": "lkqm",
     "license": "MIT",
     "repository": {
@@ -77,8 +77,8 @@
                     "type": "string",
                     "default": "Y/M/D",
                     "enum": [
-                        "YYYY-MM-DD",
                         "Y/M/D",
+                        "YYYY-MM-DD",
                         "DD.MM.YYYY",
                         "relative"
                     ],
