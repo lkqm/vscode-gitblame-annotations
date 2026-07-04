@@ -4,6 +4,7 @@ import { Uri } from 'vscode';
 
 export interface Blame {
     line: number;
+    sourceLine: number;
     author: string;
     mail: string;
     commit: string;
@@ -16,7 +17,7 @@ export interface Blame {
 }
 
 export interface CommitBlame {
-    lines: [number, number][];
+    lines: [number, number, number][];
     author: string;
     mail: string;
     commit: string;
@@ -33,6 +34,11 @@ export interface Change {
     readonly originalUri: Uri;
     readonly renameUri: Uri | undefined;
     readonly status: string;
+}
+
+export interface BlameLine {
+    blame: Blame;
+    lineText: string;
 }
 
 /**
@@ -95,6 +101,37 @@ export async function getBlames(workDir: string, file: string, ref?: string): Pr
 }
 
 /**
+ * 获取指定行的 blame 信息和行内容
+ */
+export async function getBlameLine(workDir: string, file: string, line: number, ref?: string): Promise<BlameLine | undefined> {
+    if (line < 1) {
+        return undefined;
+    }
+
+    const args = ['blame', '--line-porcelain', '-L', `${line},${line}`];
+    if (ref) {
+        args.push(ref);
+    }
+    args.push('--', file);
+
+    const blame = await exec(workDir, args);
+    return parseBlameLine(blame);
+}
+
+/**
+ * 获取指定版本中某一行的文本
+ */
+export async function getFileLineAtRef(workDir: string, file: string, ref: string, line: number): Promise<string> {
+    if (line < 1) {
+        return "";
+    }
+
+    const normalizedFile = file.split(path.sep).join(path.posix.sep);
+    const content = await exec(workDir, ['show', `${ref}:${normalizedFile}`]);
+    return content.split(/\r?\n/)[line - 1] ?? "";
+}
+
+/**
  * 获取变更信息
  */
 export async function getChanges(workDir: string, commitId1: string, commitId2?: string): Promise<Change[]> {
@@ -120,6 +157,19 @@ export async function getParentCommitId(workDir: string, commitId: string): Prom
         return parentId;
     } catch (error) {
         return "";
+    }
+}
+
+/**
+ * 获取所有父提交
+ */
+export async function getParentCommitIds(workDir: string, commitId: string): Promise<string[]> {
+    try {
+        const commit = await exec(workDir, ["rev-list", "--parents", "-n", "1", commitId]);
+        const parts = commit.trim().split(/\s+/).filter(p => p);
+        return parts.slice(1);
+    } catch (error) {
+        return [];
     }
 }
 
@@ -289,14 +339,15 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
                 continue;
             }
             const commitBlock = commitToBlock.get(commit);
+            const sourceLineNumber = parseInt(parts[1]);
             const lineNumber = parseInt(parts[2]);
             const lineCount = parseInt(parts[3]);
             if (commitBlock) {
-                commitBlock.lines.push([lineNumber, lineCount]);
+                commitBlock.lines.push([lineNumber, lineCount, sourceLineNumber]);
                 currentBlock = commitBlock;
             } else {
                 currentBlock = {
-                    lines: [[lineNumber, lineCount]],
+                    lines: [[lineNumber, lineCount, sourceLineNumber]],
                     commit: commit,
                     author: '',
                     mail: '',
@@ -337,6 +388,57 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
         }
     }
     return { totalLines, blames };
+}
+
+function parseBlameLine(raw: string): BlameLine | undefined {
+    const lines = raw.split('\n');
+    const header = lines.find(line => line.trim()) ?? "";
+    const headerParts = header.split(' ');
+    if (headerParts.length < 3) {
+        return undefined;
+    }
+
+    const commit = headerParts[0];
+    const sourceLine = parseInt(headerParts[1]);
+    const lineNumber = parseInt(headerParts[2]);
+    const blame: Blame = {
+        line: lineNumber,
+        sourceLine,
+        author: '',
+        mail: '',
+        commit,
+        summary: '',
+        timestamp: 0,
+        commited: commit !== '0000000000000000000000000000000000000000',
+        title: '',
+        previousCommit: undefined,
+        previousFile: undefined,
+    };
+    let lineText = "";
+
+    for (const line of lines.slice(1)) {
+        if (line.startsWith('author ')) {
+            blame.author = line.substring(7);
+        } else if (line.startsWith('author-mail ')) {
+            blame.mail = line.substring(12);
+        } else if (line.startsWith('author-time ')) {
+            blame.timestamp = parseInt(line.substring(12));
+        } else if (line.startsWith('summary ')) {
+            blame.summary = line.substring(8);
+        } else if (line.startsWith('previous ')) {
+            const previous = line.substring(9);
+            const firstSpaceIndex = previous.indexOf(' ');
+            if (firstSpaceIndex > 0) {
+                blame.previousCommit = previous.substring(0, firstSpaceIndex);
+                blame.previousFile = previous.substring(firstSpaceIndex + 1);
+            }
+        } else if (line.startsWith('\t')) {
+            lineText = line.substring(1);
+            break;
+        }
+    }
+
+    return { blame, lineText };
 }
 
 /**
@@ -406,11 +508,12 @@ function parseChanges(workDir: string, raw: string): Change[] {
 function toBlames(totalLines: number, commitBlames: CommitBlame[]): Blame[] {
     const blames: Blame[] = new Array(totalLines);
     commitBlames.forEach(({ lines, ...commitInfo }) => {
-        lines.forEach(([start, length]) => {
+        lines.forEach(([start, length, sourceStart]) => {
             const end = start + length - 1;
             for (let i = start - 1; i < end; i++) {
                 blames[i] = {
                     line: i + 1,
+                    sourceLine: sourceStart + (i - (start - 1)),
                     ...commitInfo
                 };
             }

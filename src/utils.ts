@@ -176,6 +176,7 @@ export function getCommitColor(commit: string, timestamp: number): { lightColor:
 export function buildUncommitBlame(line: number): Blame {
 	return {
 		line: line,
+		sourceLine: line,
 		commit: '0000000000000000000000000000000000000000',
 		author: '',
 		mail: '',

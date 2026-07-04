@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+- Added Line History to trace how a blamed line changed over time.
+
 ## 0.4.0
 
 - Added Previous Revision navigation from blame hover.

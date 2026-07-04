@@ -2,6 +2,7 @@ import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
+import { showLineHistory } from './lineHistory';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
 import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toGitUri, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
@@ -38,7 +39,7 @@ interface GitDocumentParams {
     repositoryRoot?: string,
 }
 
-const MaxTitleWidth = 25;
+const MaxAuthorWidth = 14;
 
 /**
 * 激活插件
@@ -182,7 +183,32 @@ function registerCommands(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand, annotatePreviousRevisionCommand);
+    const viewLineHistoryCommand = vscode.commands.registerCommand('git.blame.viewLineHistory', async (fileName: string = "", lineNumber?: number, ref?: string, repositoryRoot: string = "") => {
+        const activeEditor = vscode.window.activeTextEditor;
+        let targetLine = lineNumber;
+        let activeDocument: vscode.TextDocument | undefined;
+
+        if (!fileName && activeEditor) {
+            const blameContext = await getBlameDocumentContext(activeEditor.document);
+            fileName = blameContext?.fileName ?? "";
+            ref = blameContext?.ref;
+            repositoryRoot = blameContext?.repositoryRoot ?? "";
+            targetLine = activeEditor.selection.active.line + 1;
+            activeDocument = activeEditor.document;
+        } else if (activeEditor?.document.fileName === fileName) {
+            activeDocument = activeEditor.document;
+        }
+
+        await showLineHistory({
+            fileName,
+            lineNumber: targetLine,
+            ref,
+            repositoryRoot,
+            activeDocument,
+        });
+    });
+
+    context.subscriptions.push(toggleCommand, showCommand, hideCommand, viewCommitCommand, copyHashCommand, annotatePreviousRevisionCommand, viewLineHistoryCommand);
 }
 
 /**
@@ -372,7 +398,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
                         return undefined;
                     }
 
-                    const content = buildHoverMessage(blame, blameContext.fileName, repoWebBase, blameContext.repositoryRoot, document.languageId);
+                    const content = buildHoverMessage(blame, blameContext.fileName, repoWebBase, blameContext.repositoryRoot, document.languageId, blameContext.ref);
                     if (!content) {
                         return undefined;
                     }
@@ -463,8 +489,6 @@ function isPathInside(root: string, fileName: string): boolean {
     const relativePath = path.relative(root, fileName);
     return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
-
-
 
 /**
 * 隐藏装饰器
@@ -661,7 +685,7 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
     return [decorationOptions, decorationOptionsHeatmap];
 }
 
-function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, repositoryRoot: string, languageId: string): vscode.MarkdownString | undefined {
+function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, repositoryRoot: string, languageId: string, ref?: string): vscode.MarkdownString | undefined {
     if (!blame.commited) {
         return undefined;
     }
@@ -699,9 +723,10 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, 
         const annotatePreviousRevisionUri = encodeURIComponent(JSON.stringify([blame.previousCommit, blame.previousFile ?? "", fileName, repositoryRoot, languageId]));
         annotatePreviousRevision = ` | [Previous Revision](command:git.blame.annotatePreviousRevision?${annotatePreviousRevisionUri})`;
     }
+    const viewLineHistoryUri = encodeURIComponent(JSON.stringify([fileName, blame.line, ref, repositoryRoot, languageId]));
 
     content.appendMarkdown("\n\n---\n\n")
-    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}${annotatePreviousRevision}  \n`);
+    content.appendMarkdown(`$(git-commit) ${commit7} ${copyIcon}${viewExternal}${annotatePreviousRevision} | [Line History](command:git.blame.viewLineHistory?${viewLineHistoryUri})  \n`);
 
     content.isTrusted = true;
     content.supportThemeIcons = true;
@@ -720,32 +745,18 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
         return Math.max(maxW, text.length);
     }, 8);
 
-    const textWidths = new Map<string, { width: number, widths: number[] }>();
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
-            const formattedAuthor = formatAuthor(line.author, config.authorNameStyle);
-            line.title = `${tsText} ${formattedAuthor}`
+            const authorText = buildAuthorBlock(line.author, config.authorNameStyle);
+            line.title = `${tsText} ${authorText}`
         } else {
             line.title = '';
         }
 
-        if (!textWidths.has(line.commit)) {
-            const { width, widths } = getTextWidth(line.title);
-            textWidths.set(line.commit, { width, widths });
-            if (width > maxWidth) { maxWidth = width; }
-        }
+        const { width } = getTextWidth(line.title);
+        if (width > maxWidth) { maxWidth = width; }
     });
-
-    if (maxWidth > MaxTitleWidth) {
-        maxWidth = MaxTitleWidth;
-        blames.forEach(line => {
-            const { width, widths } = textWidths.get(line.commit) || { width: 0, widths: [] };
-            if (width > maxWidth) {
-                line.title = trancateText(line.title, maxWidth - 1, widths) + "…";
-            }
-        });
-    }
 
     // Blank non-first lines of each consecutive same-commit block
     if (config.mergeCommitLines) {
@@ -757,4 +768,14 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     }
 
     return maxWidth;
+}
+
+function buildAuthorBlock(author: string, authorNameStyle: AuthorNameStyle): string {
+    const formattedAuthor = formatAuthor(author, authorNameStyle);
+    const { width, widths } = getTextWidth(formattedAuthor);
+    if (width <= MaxAuthorWidth) {
+        return formattedAuthor;
+    }
+
+    return trancateText(formattedAuthor, MaxAuthorWidth - 1, widths) + "…";
 }
