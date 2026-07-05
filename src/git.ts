@@ -8,6 +8,7 @@ export interface Blame {
     author: string;
     mail: string;
     commit: string;
+    commitNumber?: number;
     summary: string;
     timestamp: number;
     commited: boolean;
@@ -21,6 +22,7 @@ export interface CommitBlame {
     author: string;
     mail: string;
     commit: string;
+    commitNumber?: number;
     summary: string;
     timestamp: number;
     commited: boolean;
@@ -98,6 +100,29 @@ export async function getBlames(workDir: string, file: string, ref?: string): Pr
     const blame = await exec(workDir, args);
     const { totalLines, blames } = parseBlames(blame);
     return toBlames(totalLines, blames);
+}
+
+/**
+ * 获取文件历史中的提交序号，最早的文件修改为 1。
+ */
+export async function getFileRevisionNumbers(workDir: string, file: string, ref?: string): Promise<Map<string, number>> {
+    const args = ['log', '--follow', '--format=%H'];
+    if (ref) {
+        args.push(ref);
+    }
+    args.push('--', file);
+
+    const history = await exec(workDir, args);
+    const commits = history
+        .split(/\r?\n/)
+        .map(commit => commit.trim())
+        .filter(commit => commit);
+
+    const commitNumbers = new Map<string, number>();
+    commits.reverse().forEach((commit, index) => {
+        commitNumbers.set(commit, index + 1);
+    });
+    return commitNumbers;
 }
 
 /**

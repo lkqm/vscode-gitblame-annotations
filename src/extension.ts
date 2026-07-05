@@ -1,7 +1,7 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
-import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
+import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileRevisionNumbers, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import { showLineHistory } from './lineHistory';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
 import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toGitUri, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
@@ -22,6 +22,7 @@ const gitDocumentRepositories = new Map<string, string>();
 interface BlameDisplayConfig {
     mergeCommitLines: boolean,
     highlightChangedLines: boolean,
+    showCommitNumber: boolean,
     dateFormatStyle: DateFormatStyle,
     authorNameStyle: AuthorNameStyle
 }
@@ -355,6 +356,8 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         // Blames
         const blameFile = getRepositoryRelativePath(blameContext.repositoryRoot, blameContext.fileName);
         const blames = await getBlames(blameContext.repositoryRoot, blameFile, blameContext.ref);
+        const commitNumbers = await getFileRevisionNumbers(blameContext.repositoryRoot, blameFile, blameContext.ref);
+        applyCommitNumbers(blames, commitNumbers);
         for (let i = blames.length; i < document.lineCount; i++) {
             blames.push(buildUncommitBlame(i + 1));
         }
@@ -474,6 +477,12 @@ function toNamedGitUri(fileName: string, ref: string, repositoryRoot: string): U
     return uri.with({
         path: displayPath,
         query: JSON.stringify({ ...params, repositoryRoot }),
+    });
+}
+
+function applyCommitNumbers(blames: Blame[], commitNumbers: Map<string, number>) {
+    blames.forEach(blame => {
+        blame.commitNumber = commitNumbers.get(blame.commit);
     });
 }
 
@@ -616,6 +625,7 @@ function buildDecorationOptions(blames: Blame[], fileName: string, repoWebBase: 
     const config: BlameDisplayConfig = {
         mergeCommitLines: cfg.get('mergeCommitLines', false),
         highlightChangedLines: cfg.get('highlightChangedLines', false),
+        showCommitNumber: cfg.get('showCommitNumber', false),
         dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
         authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
     };
@@ -744,12 +754,21 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
         lineTimestampText.set(line.line, text);
         return Math.max(maxW, text.length);
     }, 8);
+    const maxCommitNumberWidth = config.showCommitNumber
+        ? blames.reduce((maxW, line) => {
+            if (!line.commited || !line.commitNumber) { return maxW; }
+            return Math.max(maxW, `${line.commitNumber}`.length);
+        }, 0)
+        : 0;
 
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
             const authorText = buildAuthorBlock(line.author, config.authorNameStyle);
-            line.title = `${tsText} ${authorText}`
+            const commitNumberText = config.showCommitNumber && line.commitNumber
+                ? ` ${`${line.commitNumber}`.padStart(maxCommitNumberWidth, '\u2007')}`
+                : '';
+            line.title = `${tsText} ${authorText}${commitNumberText}`;
         } else {
             line.title = '';
         }
@@ -774,7 +793,7 @@ function buildAuthorBlock(author: string, authorNameStyle: AuthorNameStyle): str
     const formattedAuthor = formatAuthor(author, authorNameStyle);
     const { width, widths } = getTextWidth(formattedAuthor);
     if (width <= MaxAuthorWidth) {
-        return formattedAuthor;
+        return formattedAuthor.padEnd(formattedAuthor.length + MaxAuthorWidth - width, '\u2007');
     }
 
     return trancateText(formattedAuthor, MaxAuthorWidth - 1, widths) + "…";

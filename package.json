@@ -67,16 +67,6 @@
         "configuration": {
             "title": "Git Blame Annotations",
             "properties": {
-                "gitblame.mergeCommitLines": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
-                },
-                "gitblame.highlightChangedLines": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Highlight all lines of the commit under the cursor"
-                },
                 "gitblame.dateFormatStyle": {
                     "type": "string",
                     "default": "Y/M/D",
@@ -97,6 +87,21 @@
                         "last"
                     ],
                     "description": "Whether to show the Commit Author's full name, or only first/last"
+                },
+                "gitblame.showCommitNumber": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show the file revision number for each blamed commit."
+                },
+                "gitblame.mergeCommitLines": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show annotation only on the first line of each commit block, leaving subsequent lines blank."
+                },
+                "gitblame.highlightChangedLines": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Highlight all lines of the commit under the cursor"
                 }
             }
         }

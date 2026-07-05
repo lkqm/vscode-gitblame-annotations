@@ -16,10 +16,11 @@ Display git blame in editor gutter like JetBrains IDEs or GitLens.
 5. Click "Line History" in the hover to compare previous revisions of the line.
 
 ## Configuration
-- `gitblame.mergeCommitLines`: Show annotation only on the first line of each commit block, leaving subsequent lines blank.
-- `gitblame.highlightChangedLines`: Highlight all lines of the commit under the cursor.
 - `gitblame.dateFormatStyle`: The date format for blame annotations. (Pick from several supported date formats)
 - `gitblame.authorNameStyle`: Whether to show the Commit Author's full name, or only first/last
+- `gitblame.showCommitNumber`: Show the file revision number for each blamed commit.
+- `gitblame.mergeCommitLines`: Show annotation only on the first line of each commit block, leaving subsequent lines blank.
+- `gitblame.highlightChangedLines`: Highlight all lines of the commit under the cursor.
 
 ## Commands
 - `git.blame.toggle` - Toggle Annotations (shortcut: ctrl+alt+b)
