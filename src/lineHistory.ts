@@ -266,7 +266,11 @@ async function loadLineHistoryBatch(repositoryRoot: string, cursor: LineHistoryC
 
 async function getBlameLineAtLine(repositoryRoot: string, fileName: string, lineNumber: number, ref?: string) {
     const blameFile = getRepositoryRelativePath(repositoryRoot, fileName);
-    return getBlameLine(repositoryRoot, blameFile, lineNumber, ref);
+    try {
+        return await getBlameLine(repositoryRoot, blameFile, lineNumber, ref);
+    } catch (_) {
+        return undefined;
+    }
 }
 
 function getActiveDocumentLineText(fileName: string, lineNumber: number, ref?: string, activeDocument?: vscode.TextDocument): string | undefined {
