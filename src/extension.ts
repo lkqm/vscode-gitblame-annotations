@@ -2,7 +2,7 @@ import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileRevisionNumbers, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
-import { showLineHistory } from './lineHistory';
+import { registerLineHistoryProviders, showLineHistory } from './lineHistory';
 import type { AuthorNameStyle, DateFormatStyle } from './utils';
 import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toGitUri, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
 
@@ -52,6 +52,7 @@ const MaxAuthorWidth = 14;
 * 激活插件
 */
 export function activate(context: vscode.ExtensionContext) {
+    registerLineHistoryProviders(context);
     registerCommands(context);
     registerListeners(context);
     const editor = vscode.window.activeTextEditor;

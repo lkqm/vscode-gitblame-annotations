@@ -13,6 +13,7 @@ export interface Blame {
     timestamp: number;
     commited: boolean;
     title: string;
+    filename?: string;
     previousCommit?: string;
     previousFile?: string;
 }
@@ -27,6 +28,7 @@ export interface CommitBlame {
     timestamp: number;
     commited: boolean;
     title: string;
+    filename?: string;
     previousCommit?: string;
     previousFile?: string;
 }
@@ -41,6 +43,12 @@ export interface Change {
 export interface BlameLine {
     blame: Blame;
     lineText: string;
+}
+
+export interface LineParentMapping {
+    kind: 'A' | 'M' | 'R';
+    previousFile?: string;
+    previousLine?: number;
 }
 
 /**
@@ -160,12 +168,34 @@ export async function getFileLineAtRef(workDir: string, file: string, ref: strin
  * 获取变更信息
  */
 export async function getChanges(workDir: string, commitId1: string, commitId2?: string): Promise<Change[]> {
-    const args = ["diff-tree", "-r", "--name-status", "-z", "--diff-filter=ADMR", commitId1];
+    const args = ["diff-tree", "-r", "--name-status", "-z", "--diff-filter=ADMR", "--find-renames", commitId1];
     if (commitId2) {
         args.push(commitId2);
     }
     const changes = await exec(workDir, args);
     return parseChanges(workDir, changes);
+}
+
+/**
+ * Map a line in a commit to the corresponding line in its parent.
+ */
+export async function getLineParentMapping(workDir: string, parentCommitId: string, commitId: string, files: string[], line: number): Promise<LineParentMapping | undefined> {
+    if (line < 1) {
+        return undefined;
+    }
+
+    const diff = await exec(workDir, [
+        'diff',
+        '--no-color',
+        '--no-ext-diff',
+        '--find-renames',
+        '--unified=0',
+        parentCommitId,
+        commitId,
+        '--',
+        ...files,
+    ]);
+    return parseLineParentMapping(diff, line);
 }
 
 /**
@@ -349,6 +379,7 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
         timestamp: 0,
         commited: false,
         title: '',
+        filename: undefined,
         previousCommit: undefined,
         previousFile: undefined,
     };
@@ -380,6 +411,7 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
                     timestamp: 0,
                     commited: (commit !== '0000000000000000000000000000000000000000'),
                     title: '',
+                    filename: undefined,
                     previousCommit: undefined,
                     previousFile: undefined,
                 };
@@ -409,6 +441,7 @@ function parseBlames(blame: string): { totalLines: number, blames: CommitBlame[]
                 currentBlock.previousFile = previous.substring(firstSpaceIndex + 1);
             }
         } else if (line.startsWith('filename ')) {
+            currentBlock.filename = line.substring(9);
             newBlock = true;
         }
     }
@@ -436,6 +469,7 @@ function parseBlameLine(raw: string): BlameLine | undefined {
         timestamp: 0,
         commited: commit !== '0000000000000000000000000000000000000000',
         title: '',
+        filename: undefined,
         previousCommit: undefined,
         previousFile: undefined,
     };
@@ -457,6 +491,8 @@ function parseBlameLine(raw: string): BlameLine | undefined {
                 blame.previousCommit = previous.substring(0, firstSpaceIndex);
                 blame.previousFile = previous.substring(firstSpaceIndex + 1);
             }
+        } else if (line.startsWith('filename ')) {
+            blame.filename = line.substring(9);
         } else if (line.startsWith('\t')) {
             lineText = line.substring(1);
             break;
@@ -464,6 +500,137 @@ function parseBlameLine(raw: string): BlameLine | undefined {
     }
 
     return { blame, lineText };
+}
+
+function parseLineParentMapping(raw: string, line: number): LineParentMapping | undefined {
+    const lines = raw.split(/\r?\n/);
+    let previousFile: string | undefined;
+    let currentFile: string | undefined;
+
+    for (let i = 0; i < lines.length; i++) {
+        const diffLine = lines[i];
+        if (diffLine.startsWith('--- ')) {
+            previousFile = parseDiffFileName(diffLine.substring(4), 'a');
+        } else if (diffLine.startsWith('+++ ')) {
+            currentFile = parseDiffFileName(diffLine.substring(4), 'b');
+        } else if (diffLine.startsWith('rename from ')) {
+            previousFile = diffLine.substring(12);
+        } else if (diffLine.startsWith('rename to ')) {
+            currentFile = diffLine.substring(10);
+        } else if (diffLine.startsWith('@@ ')) {
+            const hunk = parseDiffHunkHeader(diffLine);
+            if (!hunk || hunk.newCount === 0) {
+                continue;
+            }
+
+            const newEnd = hunk.newStart + hunk.newCount - 1;
+            if (line < hunk.newStart || line > newEnd) {
+                continue;
+            }
+
+            return mapLineInHunk(lines, i + 1, hunk, line, previousFile, currentFile);
+        }
+    }
+
+    return undefined;
+}
+
+function mapLineInHunk(
+    lines: string[],
+    startIndex: number,
+    hunk: { oldStart: number; newStart: number },
+    targetLine: number,
+    previousFile: string | undefined,
+    currentFile: string | undefined
+): LineParentMapping {
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+    const pendingOldLines: number[] = [];
+
+    for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git ') || line.startsWith('@@ ')) {
+            break;
+        }
+
+        if (line.startsWith('\\')) {
+            continue;
+        }
+
+        if (line.startsWith('-')) {
+            pendingOldLines.push(oldLine);
+            oldLine++;
+            continue;
+        }
+
+        if (line.startsWith('+')) {
+            const previousLine = pendingOldLines.shift();
+            if (newLine === targetLine) {
+                if (previousLine) {
+                    return {
+                        kind: isRename(previousFile, currentFile) ? 'R' : 'M',
+                        previousFile,
+                        previousLine,
+                    };
+                }
+
+                return {
+                    kind: 'A',
+                    previousFile,
+                };
+            }
+
+            newLine++;
+            continue;
+        }
+
+        const previousLine = oldLine;
+        if (newLine === targetLine) {
+            return {
+                kind: isRename(previousFile, currentFile) ? 'R' : 'M',
+                previousFile,
+                previousLine,
+            };
+        }
+        oldLine++;
+        newLine++;
+    }
+
+    return {
+        kind: 'A',
+        previousFile,
+    };
+}
+
+function parseDiffFileName(raw: string, prefix: 'a' | 'b'): string | undefined {
+    if (raw === '/dev/null') {
+        return undefined;
+    }
+
+    const fileName = raw.startsWith(`${prefix}/`) ? raw.substring(2) : raw;
+    return stripDiffPathMetadata(fileName);
+}
+
+function stripDiffPathMetadata(fileName: string): string {
+    const tabIndex = fileName.indexOf('\t');
+    return tabIndex >= 0 ? fileName.substring(0, tabIndex) : fileName;
+}
+
+function parseDiffHunkHeader(line: string): { oldStart: number; newStart: number; newCount: number } | undefined {
+    const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) {
+        return undefined;
+    }
+
+    return {
+        oldStart: Number(match[1]),
+        newStart: Number(match[3]),
+        newCount: match[4] === undefined ? 1 : Number(match[4]),
+    };
+}
+
+function isRename(previousFile: string | undefined, currentFile: string | undefined): boolean {
+    return !!previousFile && !!currentFile && previousFile !== currentFile;
 }
 
 /**

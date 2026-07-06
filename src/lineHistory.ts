@@ -1,7 +1,7 @@
 import path from 'path';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
-import { Blame, Change, getBlameLine, getChanges, getEmptyTree, getGitRepository, getParentCommitIds } from './git';
+import { Blame, Change, LineParentMapping as GitLineParentMapping, getBlameLine, getChanges, getEmptyTree, getGitRepository, getLineParentMapping, getParentCommitIds } from './git';
 import type { DateFormatStyle } from './utils';
 import { VALID_DATEFORMATSTYLES, defaultDateFormatStyle, formatDate, toGitUri, toMultiFileDiffEditorUris } from './utils';
 
@@ -16,7 +16,8 @@ interface LineHistoryEntry {
 type LineHistoryChangeKind = 'A' | 'M' | 'R' | 'D';
 
 interface LineHistoryQuickPickItem extends vscode.QuickPickItem {
-    entry: LineHistoryEntry,
+    entry?: LineHistoryEntry,
+    command?: 'loadMore',
 }
 
 interface LineHistoryDiffTarget {
@@ -33,6 +34,17 @@ interface LineHistoryCursor {
     done: boolean,
 }
 
+type LineHistoryParentMapping =
+    | {
+        kind: 'M' | 'R',
+        parentCommit: string,
+        previousFile: string,
+        previousLine: number,
+    }
+    | {
+        kind: 'A',
+    };
+
 export interface ShowLineHistoryOptions {
     fileName: string,
     lineNumber?: number,
@@ -41,8 +53,16 @@ export interface ShowLineHistoryOptions {
     activeDocument?: vscode.TextDocument,
 }
 
-const LineHistoryPageSize = 10;
-const MaxLineHistoryEntries = 200;
+const LineHistoryPageSize = 2;
+const LineHistoryAutoLoadLimit = 200;
+const LineHistoryLoadMoreSize = 100;
+const EmptyDiffDocumentScheme = 'gitblame-empty-diff';
+
+export function registerLineHistoryProviders(context: vscode.ExtensionContext) {
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(EmptyDiffDocumentScheme, {
+        provideTextDocumentContent: () => '',
+    }));
+}
 
 export async function showLineHistory(options: ShowLineHistoryOptions) {
     let { fileName, lineNumber, ref, repositoryRoot, activeDocument } = options;
@@ -72,41 +92,41 @@ export async function showLineHistory(options: ShowLineHistoryOptions) {
         );
 
         if (entries.length === 0) {
-            vscode.window.showInformationMessage('No committed history found for this line.');
             return;
         }
 
         const quickPick = vscode.window.createQuickPick<LineHistoryQuickPickItem>();
-        quickPick.title = `Line History: ${path.basename(fileName)}:${lineNumber}`;
-        quickPick.placeholder = 'Select a revision to compare this file';
         quickPick.matchOnDescription = true;
         quickPick.matchOnDetail = true;
-        quickPick.items = entries.map(entry => toLineHistoryQuickPickItem(entry));
+        quickPick.items = toLineHistoryQuickPickItems(entries, cursor, LineHistoryAutoLoadLimit);
         quickPick.buttons = [];
         quickPick.busy = !cursor.done;
         let disposed = false;
+        let loadLimit = LineHistoryAutoLoadLimit;
+        let loadingMore = false;
 
         quickPick.onDidAccept(async () => {
             const selected = quickPick.selectedItems[0];
-            quickPick.hide();
-            if (selected) {
-                await openLineHistoryFileDiff(selected.entry, repositoryRoot!);
-            }
-        });
+            if (selected?.command === 'loadMore') {
+                if (loadingMore) {
+                    return;
+                }
 
-        quickPick.onDidTriggerItemButton(async event => {
-            const button = event.button as vscode.QuickInputButton & { action?: string };
-            const entry = event.item.entry;
-
-            if (button.action === 'copyHash') {
-                await vscode.env.clipboard.writeText(entry.blame.commit);
-                vscode.window.showInformationMessage('Commit hash copied.');
+                loadingMore = true;
+                const previousEntryCount = entries.length;
+                loadLimit += LineHistoryLoadMoreSize;
+                try {
+                    await loadLineHistoryUntilLimit(repositoryRoot!, cursor, entries, quickPick, activeDocument, () => disposed, loadLimit);
+                    focusLineHistoryEntry(quickPick, entries[previousEntryCount]);
+                } finally {
+                    loadingMore = false;
+                }
                 return;
             }
 
-            if (button.action === 'openCommit') {
-                quickPick.hide();
-                await vscode.commands.executeCommand('git.blame.viewCommit', entry.blame.commit, entry.blame.summary, entry.fileName);
+            quickPick.hide();
+            if (selected?.entry) {
+                await openLineHistoryFileDiff(selected.entry, repositoryRoot!);
             }
         });
 
@@ -116,22 +136,23 @@ export async function showLineHistory(options: ShowLineHistoryOptions) {
         });
         quickPick.show();
 
-        void loadRemainingLineHistory(repositoryRoot, cursor, entries, quickPick, activeDocument, () => disposed);
+        void loadLineHistoryUntilLimit(repositoryRoot, cursor, entries, quickPick, activeDocument, () => disposed, loadLimit);
     } catch (error: any) {
         vscode.window.showErrorMessage(`${error.message}`);
     }
 }
 
-async function loadRemainingLineHistory(
+async function loadLineHistoryUntilLimit(
     repositoryRoot: string,
     cursor: LineHistoryCursor,
     entries: LineHistoryEntry[],
     quickPick: vscode.QuickPick<LineHistoryQuickPickItem>,
     activeDocument: vscode.TextDocument | undefined,
-    isDisposed: () => boolean
+    isDisposed: () => boolean,
+    loadLimit: number
 ) {
     try {
-        while (!isDisposed() && !cursor.done) {
+        while (!isDisposed() && !cursor.done && cursor.loaded < loadLimit) {
             quickPick.busy = true;
             const nextEntries = await loadLineHistoryBatch(repositoryRoot, cursor, activeDocument);
             if (nextEntries.length === 0) {
@@ -140,7 +161,7 @@ async function loadRemainingLineHistory(
 
             entries.push(...nextEntries);
             if (!isDisposed()) {
-                quickPick.items = entries.map(entry => toLineHistoryQuickPickItem(entry));
+                quickPick.items = toLineHistoryQuickPickItems(entries, cursor, loadLimit);
             }
         }
     } catch (error: any) {
@@ -150,6 +171,7 @@ async function loadRemainingLineHistory(
     } finally {
         if (!isDisposed()) {
             quickPick.busy = false;
+            quickPick.items = toLineHistoryQuickPickItems(entries, cursor, loadLimit);
         }
     }
 }
@@ -159,16 +181,16 @@ async function openLineHistoryFileDiff(entry: LineHistoryEntry, repositoryRoot: 
     const diffTarget = await resolveLineHistoryDiffTarget(repositoryRoot, entry);
 
     const title = `${commitId.substring(0, 7)} - ${path.basename(entry.fileName)}`;
-    if (diffTarget.resource.originalUri && diffTarget.resource.modifiedUri) {
-        await vscode.commands.executeCommand('vscode.diff', diffTarget.resource.originalUri, diffTarget.resource.modifiedUri, title, { preview: false });
-        return;
-    }
+    const originalUri = diffTarget.resource.originalUri ?? toEmptyDiffUri(entry.fileName, diffTarget.parentCommitId);
+    const modifiedUri = diffTarget.resource.modifiedUri ?? toEmptyDiffUri(entry.fileName, commitId);
+    await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title, { preview: false });
+}
 
-    const multiDiffSourceUri = Uri.from({ scheme: 'scm-history-item', path: `${repositoryRoot}/${diffTarget.parentCommitId}..${commitId}/${entry.fileName}` });
-    await vscode.commands.executeCommand('_workbench.openMultiDiffEditor', {
-        multiDiffSourceUri,
-        title,
-        resources: [diffTarget.resource],
+function toEmptyDiffUri(fileName: string, ref: string): Uri {
+    return Uri.from({
+        scheme: EmptyDiffDocumentScheme,
+        path: `/${path.basename(fileName) || 'empty'}`,
+        query: JSON.stringify({ ref, fileName }),
     });
 }
 
@@ -222,7 +244,7 @@ function createLineHistoryCursor(fileName: string, lineNumber: number, ref?: str
 async function loadLineHistoryBatch(repositoryRoot: string, cursor: LineHistoryCursor, activeDocument?: vscode.TextDocument): Promise<LineHistoryEntry[]> {
     const entries: LineHistoryEntry[] = [];
 
-    while (!cursor.done && entries.length < LineHistoryPageSize && cursor.loaded < MaxLineHistoryEntries) {
+    while (!cursor.done && entries.length < LineHistoryPageSize) {
         const key = `${cursor.currentRef ?? 'WORKTREE'}:${cursor.currentFileName}:${cursor.currentLineNumber}`;
         if (cursor.visited.has(key)) {
             cursor.done = true;
@@ -237,28 +259,26 @@ async function loadLineHistoryBatch(repositoryRoot: string, cursor: LineHistoryC
         }
 
         const blame = blameLine.blame;
+        const entryFileName = resolveHistoricalFileName(repositoryRoot, cursor.currentFileName, blame.filename);
         const lineText = getActiveDocumentLineText(cursor.currentFileName, cursor.currentLineNumber, cursor.currentRef, activeDocument) ?? blameLine.lineText.trim();
+        const parentMapping = await resolveLineHistoryParentMapping(repositoryRoot, cursor.currentFileName, blame);
         entries.push({
             blame,
-            fileName: cursor.currentFileName,
+            fileName: entryFileName,
             lineNumber: cursor.currentLineNumber,
             lineText,
-            changeKind: getLineHistoryChangeKind(repositoryRoot, cursor.currentFileName, blame),
+            changeKind: parentMapping.kind,
         });
         cursor.loaded++;
 
-        if (!blame.previousCommit) {
+        if (parentMapping.kind === 'A') {
             cursor.done = true;
             break;
         }
 
-        cursor.currentRef = blame.previousCommit;
-        cursor.currentFileName = resolveHistoricalFileName(repositoryRoot, cursor.currentFileName, blame.previousFile);
-        cursor.currentLineNumber = blame.sourceLine || cursor.currentLineNumber;
-    }
-
-    if (cursor.loaded >= MaxLineHistoryEntries) {
-        cursor.done = true;
+        cursor.currentRef = parentMapping.parentCommit;
+        cursor.currentFileName = parentMapping.previousFile;
+        cursor.currentLineNumber = parentMapping.previousLine;
     }
 
     return entries;
@@ -298,19 +318,44 @@ function resolveHistoricalFileName(repositoryRoot: string, currentFileName: stri
     return path.isAbsolute(previousFile) ? previousFile : path.join(repositoryRoot, previousFile);
 }
 
-function getLineHistoryChangeKind(repositoryRoot: string, currentFileName: string, blame: Blame): LineHistoryChangeKind {
+async function resolveLineHistoryParentMapping(repositoryRoot: string, currentFileName: string, blame: Blame): Promise<LineHistoryParentMapping> {
     if (!blame.previousCommit) {
-        return 'A';
+        return { kind: 'A' };
     }
 
-    if (blame.previousFile) {
-        const previousFileName = resolveHistoricalFileName(repositoryRoot, currentFileName, blame.previousFile);
-        if (!isSamePath(previousFileName, currentFileName)) {
-            return 'R';
-        }
+    const blameFileName = resolveHistoricalFileName(repositoryRoot, currentFileName, blame.filename);
+    const blameFile = getRepositoryRelativePath(repositoryRoot, blameFileName);
+    const previousFileName = resolveHistoricalFileName(repositoryRoot, currentFileName, blame.previousFile);
+    const previousFile = getRepositoryRelativePath(repositoryRoot, previousFileName);
+    const lineInBlamedCommit = blame.sourceLine || blame.line;
+
+    let mapping: GitLineParentMapping | undefined;
+    try {
+        mapping = await getLineParentMapping(repositoryRoot, blame.previousCommit, blame.commit, uniqueFiles([blameFile, previousFile]), lineInBlamedCommit);
+    } catch (_) {
+        return { kind: 'A' };
     }
 
-    return 'M';
+    if (!mapping?.previousLine) {
+        return { kind: 'A' };
+    }
+
+    const mappedPreviousFileName = resolveHistoricalFileName(
+        repositoryRoot,
+        currentFileName,
+        mapping.previousFile || blame.previousFile
+    );
+    const kind = mapping.kind === 'R' || !isSamePath(mappedPreviousFileName, currentFileName) ? 'R' : 'M';
+    return {
+        kind,
+        parentCommit: blame.previousCommit,
+        previousFile: mappedPreviousFileName,
+        previousLine: mapping.previousLine,
+    };
+}
+
+function uniqueFiles(files: string[]): string[] {
+    return files.filter((file, index) => file && files.indexOf(file) === index);
 }
 
 function getLineHistoryChangeSymbol(changeKind: LineHistoryChangeKind): string {
@@ -323,6 +368,35 @@ function getLineHistoryChangeSymbol(changeKind: LineHistoryChangeKind): string {
             return '+';
         case 'D':
             return '-';
+    }
+}
+
+function toLineHistoryQuickPickItems(entries: LineHistoryEntry[], cursor: LineHistoryCursor, loadLimit: number): LineHistoryQuickPickItem[] {
+    const items = entries.map(entry => toLineHistoryQuickPickItem(entry));
+    if (!cursor.done && cursor.loaded >= loadLimit) {
+        items.push(toLoadMoreLineHistoryQuickPickItem());
+    }
+
+    return items;
+}
+
+function toLoadMoreLineHistoryQuickPickItem(): LineHistoryQuickPickItem {
+    return {
+        label: ' ',
+        description: 'Load more...',
+        alwaysShow: true,
+        command: 'loadMore',
+    };
+}
+
+function focusLineHistoryEntry(quickPick: vscode.QuickPick<LineHistoryQuickPickItem>, entry: LineHistoryEntry | undefined) {
+    if (!entry) {
+        return;
+    }
+
+    const item = quickPick.items.find(candidate => candidate.entry === entry);
+    if (item) {
+        quickPick.activeItems = [item];
     }
 }
 
@@ -341,17 +415,5 @@ function toLineHistoryQuickPickItem(entry: LineHistoryEntry): LineHistoryQuickPi
         description: `${dateText}  ${entry.blame.author}`,
         detail: `${changeSymbol}    ${lineText}`,
         entry,
-        buttons: [
-            {
-                iconPath: new vscode.ThemeIcon('copy'),
-                tooltip: 'Copy Commit Hash',
-                action: 'copyHash',
-            } as vscode.QuickInputButton & { action: string },
-            {
-                iconPath: new vscode.ThemeIcon('git-commit'),
-                tooltip: 'Open Full Commit',
-                action: 'openCommit',
-            } as vscode.QuickInputButton & { action: string },
-        ],
     };
 }

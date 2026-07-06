@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1
+## 0.5.2
 
 - Fixed blame annotation author column width.
 - Fixed Line History failures on unresolved historical lines.
