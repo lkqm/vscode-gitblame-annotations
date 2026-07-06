@@ -40,6 +40,12 @@ interface GitDocumentParams {
     repositoryRoot?: string,
 }
 
+interface AuthorDisplay {
+    text: string,
+    width: number,
+    widths: number[],
+}
+
 const MaxAuthorWidth = 14;
 
 /**
@@ -760,11 +766,12 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
             return Math.max(maxW, `${line.commitNumber}`.length);
         }, 0)
         : 0;
-
+    const lineAuthorDisplay = new Map<number, AuthorDisplay>();
+    const maxAuthorWidth = getMaxAuthorWidth(blames, config.authorNameStyle, lineAuthorDisplay);
     blames.forEach(line => {
         if (line.commited) {
             const tsText = (lineTimestampText.get(line.line) ?? '').padEnd(maxTimestampWidth, '\u2007');
-            const authorText = buildAuthorBlock(line.author, config.authorNameStyle);
+            const authorText = buildAuthorBlock(lineAuthorDisplay.get(line.line)!, maxAuthorWidth);
             const commitNumberText = config.showCommitNumber && line.commitNumber
                 ? ` ${`${line.commitNumber}`.padStart(maxCommitNumberWidth, '\u2007')}`
                 : '';
@@ -789,12 +796,22 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     return maxWidth;
 }
 
-function buildAuthorBlock(author: string, authorNameStyle: AuthorNameStyle): string {
-    const formattedAuthor = formatAuthor(author, authorNameStyle);
-    const { width, widths } = getTextWidth(formattedAuthor);
-    if (width <= MaxAuthorWidth) {
-        return formattedAuthor.padEnd(formattedAuthor.length + MaxAuthorWidth - width, '\u2007');
+function getMaxAuthorWidth(blames: Blame[], authorNameStyle: AuthorNameStyle, lineAuthorDisplay: Map<number, AuthorDisplay>): number {
+    const maxWidth = blames.reduce((maxW, line) => {
+        if (!line.commited) { return maxW; }
+        const text = formatAuthor(line.author, authorNameStyle);
+        const { width, widths } = getTextWidth(text);
+        lineAuthorDisplay.set(line.line, { text, width, widths });
+        return Math.max(maxW, width);
+    }, 0);
+
+    return Math.min(maxWidth, MaxAuthorWidth);
+}
+
+function buildAuthorBlock(author: AuthorDisplay, maxAuthorWidth: number): string {
+    if (author.width <= maxAuthorWidth) {
+        return author.text.padEnd(author.text.length + maxAuthorWidth - author.width, '\u2007');
     }
 
-    return trancateText(formattedAuthor, MaxAuthorWidth - 1, widths) + "…";
+    return trancateText(author.text, maxAuthorWidth - 1, author.widths) + "…";
 }
