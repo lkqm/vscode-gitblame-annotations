@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Fixed blame annotation author column width.
+- Fixed Line History failures on unresolved historical lines.
+
 ## 0.5.0
 
 - Added Line History to trace how a blamed line changed over time.
