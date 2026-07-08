@@ -6,14 +6,13 @@ Display git blame in editor gutter like JetBrains IDEs or GitLens.
 - Display commit information for each line.
 - Hover for commit information.
 - Click to view commit changes.
-- View line history to trace how a blamed line changed over time.
+- View line history.
 
 ## Usage
 1. Install `Git Blame Annotations` extension.
 2. Right-click menu on line numbers.
 3. Click "Annotate with Git Blame" or "Close Annotations".
 4. Hover annotation view commit detail.
-5. Click "Line History" in the hover to compare previous revisions of the line.
 
 ## Configuration
 - `gitblame.dateFormatStyle`: The date format for blame annotations. (Pick from several supported date formats)
