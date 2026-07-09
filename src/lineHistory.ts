@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, Change, LineParentMapping as GitLineParentMapping, getBlameLine, getChanges, getEmptyTree, getGitRepository, getLineParentMapping, getParentCommitIds } from './git';
 import type { DateFormatStyle } from './utils';
-import { VALID_DATEFORMATSTYLES, defaultDateFormatStyle, formatDate, toGitUri, toMultiFileDiffEditorUris } from './utils';
+import { formatDate, getGitBlameConfig, getRepositoryRelativePath, toGitUri, toMultiFileDiffEditorUris } from './utils';
 
 interface LineHistoryEntry {
     blame: Blame,
@@ -301,15 +301,6 @@ function getActiveDocumentLineText(fileName: string, lineNumber: number, ref?: s
     return undefined;
 }
 
-function getRepositoryRelativePath(repositoryRoot: string, fileName: string): string {
-    const relativePath = path.relative(repositoryRoot, fileName);
-    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-        return fileName;
-    }
-
-    return relativePath;
-}
-
 function resolveHistoricalFileName(repositoryRoot: string, currentFileName: string, previousFile?: string): string {
     if (!previousFile) {
         return currentFileName;
@@ -401,10 +392,7 @@ function focusLineHistoryEntry(quickPick: vscode.QuickPick<LineHistoryQuickPickI
 }
 
 function toLineHistoryQuickPickItem(entry: LineHistoryEntry): LineHistoryQuickPickItem {
-    const rawStyle = vscode.workspace.getConfiguration('gitblame').get('dateFormatStyle', defaultDateFormatStyle);
-    const activeStyle: DateFormatStyle = VALID_DATEFORMATSTYLES.includes(rawStyle as DateFormatStyle)
-        ? (rawStyle as DateFormatStyle)
-        : defaultDateFormatStyle;
+    const activeStyle = getGitBlameConfig().dateFormatStyle;
     const dateStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
     const dateText = formatDate(entry.blame.timestamp, dateStyle);
     const lineText = entry.lineText || '(empty line)';

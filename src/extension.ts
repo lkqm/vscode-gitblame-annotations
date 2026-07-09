@@ -3,8 +3,8 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileRevisionNumbers, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import { registerLineHistoryProviders, showLineHistory } from './lineHistory';
-import type { AuthorNameStyle, DateFormatStyle } from './utils';
-import { VALID_AUTHORNAMESTYLES, VALID_DATEFORMATSTYLES, buildUncommitBlame, defaultAuthorNameStyle, defaultDateFormatStyle, formatAuthor, formatDate, getCommitColor, getTextWidth, resolveChange, toGitUri, toMultiFileDiffEditorUris, trancateText, validateConfigEnum } from './utils';
+import type { AuthorNameStyle, DateFormatStyle, GitBlameConfig } from './utils';
+import { buildUncommitBlame, formatAuthor, formatDate, getCommitColor, getGitBlameConfig, getRepositoryRelativePath, getTextWidth, resolveChange, toMultiFileDiffEditorUris, toNamedGitUri, trancateText } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -16,35 +16,6 @@ const fileDecorations = new Map<string, {
     lineBlames: Map<number, Blame> | undefined,
     highlightDecorationType: vscode.TextEditorDecorationType | undefined,
 }>();
-const gitDocumentRepositories = new Map<string, string>();
-
-
-interface BlameDisplayConfig {
-    mergeCommitLines: boolean,
-    highlightChangedLines: boolean,
-    showCommitNumber: boolean,
-    dateFormatStyle: DateFormatStyle,
-    authorNameStyle: AuthorNameStyle
-}
-
-interface BlameDocumentContext {
-    fileName: string,
-    ref?: string,
-    repositoryRoot: string,
-}
-
-interface GitDocumentParams {
-    path?: string,
-    ref?: string,
-    submoduleOf?: string,
-    repositoryRoot?: string,
-}
-
-interface AuthorDisplay {
-    text: string,
-    width: number,
-    widths: number[],
-}
 
 const MaxAuthorWidth = 14;
 
@@ -180,12 +151,10 @@ function registerCommands(context: vscode.ExtensionContext) {
                 ? (path.isAbsolute(previousFile) ? previousFile : path.join(repoRoot, previousFile))
                 : fileName;
             const uri = toNamedGitUri(previousFileName, previousCommit, repoRoot);
-            gitDocumentRepositories.set(uri.toString(), repoRoot);
             let editor = await vscode.window.showTextDocument(uri, { preview: false });
             if (languageId && editor.document.languageId !== languageId) {
                 const document = await vscode.languages.setTextDocumentLanguage(editor.document, languageId);
                 editor = await vscode.window.showTextDocument(document, { preview: false });
-                gitDocumentRepositories.set(editor.document.uri.toString(), repoRoot);
             }
             const successed = await showDecorations([editor], true);
             if (successed) {
@@ -250,7 +219,6 @@ function registerListeners(context: vscode.ExtensionContext) {
     const closeDocumentSubscription = vscode.workspace.onDidCloseTextDocument(document => {
         const documentUri = document.uri.toString();
         fileBlameStates.delete(documentUri);
-        gitDocumentRepositories.delete(documentUri);
         const decorations = fileDecorations.get(documentUri);
         if (decorations) {
             fileDecorations.delete(documentUri);
@@ -286,8 +254,7 @@ function registerListeners(context: vscode.ExtensionContext) {
 
     // Highlight all lines of the commit under the cursor
     const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
-        const enabled = vscode.workspace.getConfiguration('gitblame').get("highlightChangedLines", false) as boolean;
-        if (!enabled) return;
+        if (!getGitBlameConfig().highlightChangedLines) return;
 
         const editor = event.textEditor;
         const uri = editor.document.uri.toString();
@@ -365,12 +332,14 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
         }
 
         // Blames
+        const config = getGitBlameConfig();
         const blameFile = getRepositoryRelativePath(blameContext.repositoryRoot, blameContext.fileName);
         const blames = await getBlames(blameContext.repositoryRoot, blameFile, blameContext.ref);
-        const showCommitNumber = vscode.workspace.getConfiguration('gitblame').get('showCommitNumber', false);
-        if (showCommitNumber) {
+        if (config.showCommitNumber) {
             const commitNumbers = await getFileRevisionNumbers(blameContext.repositoryRoot, blameFile, blameContext.ref);
-            applyCommitNumbers(blames, commitNumbers);
+            blames.forEach(blame => {
+                blame.commitNumber = commitNumbers.get(blame.commit);
+            });
         }
         for (let i = blames.length; i < document.lineCount; i++) {
             blames.push(buildUncommitBlame(i + 1));
@@ -384,7 +353,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
             decorations.decorationTypes = [];
         }
 
-        decorations.decorationOptions = buildDecorationOptions(blames);
+        decorations.decorationOptions = buildDecorationOptions(blames, config);
         for (const editor of editors) {
             const decorationNum = decorations.decorationOptions.length;
             for (let i = 0; i < decorationNum; i++) {
@@ -433,7 +402,7 @@ async function showDecorations(editors: vscode.TextEditor[], reload: boolean = f
     }
 }
 
-async function getBlameDocumentContext(document: vscode.TextDocument): Promise<BlameDocumentContext | undefined> {
+async function getBlameDocumentContext(document: vscode.TextDocument): Promise<{ fileName: string, ref?: string, repositoryRoot: string } | undefined> {
     if (document.uri.scheme === 'file') {
         const repositoryRoot = await getGitRepository(document.fileName);
         if (!repositoryRoot) {
@@ -448,13 +417,12 @@ async function getBlameDocumentContext(document: vscode.TextDocument): Promise<B
 
     if (document.uri.scheme === 'git') {
         try {
-            const params = JSON.parse(document.uri.query) as GitDocumentParams;
+            const params = JSON.parse(document.uri.query) as { path?: string, ref?: string, repositoryRoot?: string };
             if (!params.path || !params.ref) {
                 return undefined;
             }
 
             const repositoryRoot = params.repositoryRoot
-                || gitDocumentRepositories.get(document.uri.toString())
                 || findWorkspaceRootForPath(params.path)
                 || await getGitRepository(params.path);
             if (!repositoryRoot) {
@@ -474,43 +442,15 @@ async function getBlameDocumentContext(document: vscode.TextDocument): Promise<B
     return undefined;
 }
 
-function getRepositoryRelativePath(repositoryRoot: string, fileName: string): string {
-    const relativePath = path.relative(repositoryRoot, fileName);
-    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-        return fileName;
-    }
-
-    return relativePath;
-}
-
-function toNamedGitUri(fileName: string, ref: string, repositoryRoot: string): Uri {
-    const uri = toGitUri(Uri.file(fileName), ref);
-    const parsedPath = path.posix.parse(uri.path);
-    const displayPath = path.posix.join(parsedPath.dir, `${parsedPath.base} (${ref.substring(0, 8)})`);
-    const params = JSON.parse(uri.query) as GitDocumentParams;
-    return uri.with({
-        path: displayPath,
-        query: JSON.stringify({ ...params, repositoryRoot }),
-    });
-}
-
-function applyCommitNumbers(blames: Blame[], commitNumbers: Map<string, number>) {
-    blames.forEach(blame => {
-        blame.commitNumber = commitNumbers.get(blame.commit);
-    });
-}
-
 function findWorkspaceRootForPath(fileName: string): string | undefined {
     const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
     return workspaceFolders
         .map(folder => folder.uri.fsPath)
-        .filter(root => isPathInside(root, fileName))
+        .filter(root => {
+            const relativePath = path.relative(root, fileName);
+            return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+        })
         .sort((a, b) => b.length - a.length)[0];
-}
-
-function isPathInside(root: string, fileName: string): boolean {
-    const relativePath = path.relative(root, fileName);
-    return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
 /**
@@ -611,7 +551,7 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
     let supportsBlameMenu = false;
     if (document.uri.scheme === 'git') {
         try {
-            const params = JSON.parse(document.uri.query) as GitDocumentParams;
+            const params = JSON.parse(document.uri.query) as { path?: string, ref?: string };
             supportsBlameMenu = !!params.path && !!params.ref;
         } catch (_) {
             supportsBlameMenu = false;
@@ -630,17 +570,7 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
     vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', supportsBlameMenu && fileBlameState);
 }
 
-function buildDecorationOptions(blames: Blame[]): vscode.DecorationOptions[][] {
-    const cfg = vscode.workspace.getConfiguration('gitblame');
-
-    const config: BlameDisplayConfig = {
-        mergeCommitLines: cfg.get('mergeCommitLines', false),
-        highlightChangedLines: cfg.get('highlightChangedLines', false),
-        showCommitNumber: cfg.get('showCommitNumber', false),
-        dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
-        authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
-    };
-
+function buildDecorationOptions(blames: Blame[], config: GitBlameConfig = getGitBlameConfig()): vscode.DecorationOptions[][] {
     const maxWidth = fillTitles(blames, config);
     if (maxWidth <= 0) {
         return [];
@@ -711,10 +641,7 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, 
         return undefined;
     }
 
-    const rawStyle = vscode.workspace.getConfiguration('gitblame').get('dateFormatStyle', defaultDateFormatStyle);
-    const activeStyle: DateFormatStyle = VALID_DATEFORMATSTYLES.includes(rawStyle as DateFormatStyle)
-        ? (rawStyle as DateFormatStyle)
-        : defaultDateFormatStyle;
+    const activeStyle = getGitBlameConfig().dateFormatStyle;
 
     const relativeDate = formatDate(blame.timestamp, 'relative')
     const hoverStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
@@ -754,7 +681,7 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, 
     return content;
 }
 
-function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
+function fillTitles(blames: Blame[], config: GitBlameConfig): number {
     let maxWidth = 0;
 
     // Compute per-line timestamp strings and the max width for alignment padding
@@ -771,7 +698,7 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
             return Math.max(maxW, `${line.commitNumber}`.length);
         }, 0)
         : 0;
-    const lineAuthorDisplay = new Map<number, AuthorDisplay>();
+    const lineAuthorDisplay = new Map<number, { text: string, width: number, widths: number[] }>();
     const maxAuthorWidth = getMaxAuthorWidth(blames, config.authorNameStyle, lineAuthorDisplay);
     blames.forEach(line => {
         if (line.commited) {
@@ -801,7 +728,7 @@ function fillTitles(blames: Blame[], config: BlameDisplayConfig): number {
     return maxWidth;
 }
 
-function getMaxAuthorWidth(blames: Blame[], authorNameStyle: AuthorNameStyle, lineAuthorDisplay: Map<number, AuthorDisplay>): number {
+function getMaxAuthorWidth(blames: Blame[], authorNameStyle: AuthorNameStyle, lineAuthorDisplay: Map<number, { text: string, width: number, widths: number[] }>): number {
     const maxWidth = blames.reduce((maxW, line) => {
         if (!line.commited) { return maxW; }
         const text = formatAuthor(line.author, authorNameStyle);
@@ -813,7 +740,7 @@ function getMaxAuthorWidth(blames: Blame[], authorNameStyle: AuthorNameStyle, li
     return Math.min(maxWidth, MaxAuthorWidth);
 }
 
-function buildAuthorBlock(author: AuthorDisplay, maxAuthorWidth: number): string {
+function buildAuthorBlock(author: { text: string, width: number, widths: number[] }, maxAuthorWidth: number): string {
     if (author.width <= maxAuthorWidth) {
         return author.text.padEnd(author.text.length + maxAuthorWidth - author.width, '\u2007');
     }

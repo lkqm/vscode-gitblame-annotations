@@ -1,3 +1,4 @@
+import path from 'path';
 import { format as timeagoFormat } from 'timeago.js';
 import * as vscode from 'vscode';
 import { Uri } from 'vscode';
@@ -12,6 +13,14 @@ export type AuthorNameStyle = 'full' | 'first' | 'last'
 export const VALID_AUTHORNAMESTYLES: AuthorNameStyle[] = ['full', 'first', 'last'];
 export const defaultAuthorNameStyle: AuthorNameStyle = 'full';
 
+export interface GitBlameConfig {
+	mergeCommitLines: boolean,
+	highlightChangedLines: boolean,
+	showCommitNumber: boolean,
+	dateFormatStyle: DateFormatStyle,
+	authorNameStyle: AuthorNameStyle,
+}
+
 export function validateConfigEnum<T extends string>(
 	cfg: vscode.WorkspaceConfiguration, 
 	VALID_ARR: T[], 
@@ -20,6 +29,18 @@ export function validateConfigEnum<T extends string>(
 ): T {
 	const raw = cfg.get<string>(key, fallback);
 	return VALID_ARR.includes(raw as T) ? (raw as T) : fallback;
+}
+
+export function getGitBlameConfig(): GitBlameConfig {
+	const cfg = vscode.workspace.getConfiguration('gitblame');
+
+	return {
+		mergeCommitLines: cfg.get('mergeCommitLines', false),
+		highlightChangedLines: cfg.get('highlightChangedLines', false),
+		showCommitNumber: cfg.get('showCommitNumber', false),
+		dateFormatStyle: validateConfigEnum(cfg, VALID_DATEFORMATSTYLES, 'dateFormatStyle', defaultDateFormatStyle),
+		authorNameStyle: validateConfigEnum(cfg, VALID_AUTHORNAMESTYLES, 'authorNameStyle', defaultAuthorNameStyle),
+	};
 }
 
 /**
@@ -99,6 +120,26 @@ export function toGitUri(uri: Uri, ref: string, options: { submoduleOf?: string,
 	}
 
 	return uri.with({ scheme: options.scheme ?? 'git', path, query: JSON.stringify(params) });
+}
+
+export function toNamedGitUri(fileName: string, ref: string, repositoryRoot: string): Uri {
+	const uri = toGitUri(Uri.file(fileName), ref);
+	const parsedPath = path.posix.parse(uri.path);
+	const displayPath = path.posix.join(parsedPath.dir, `${parsedPath.base} (${ref.substring(0, 8)})`);
+	const params = JSON.parse(uri.query) as { path?: string, ref?: string, submoduleOf?: string };
+	return uri.with({
+		path: displayPath,
+		query: JSON.stringify({ ...params, repositoryRoot }),
+	});
+}
+
+export function getRepositoryRelativePath(repositoryRoot: string, fileName: string): string {
+	const relativePath = path.relative(repositoryRoot, fileName);
+	if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+		return fileName;
+	}
+
+	return relativePath;
 }
 
 export function getTextWidth(text: string): { width: number, widths: number[] } {
