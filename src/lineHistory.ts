@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, Change, LineParentMapping as GitLineParentMapping, getBlameLine, getChanges, getEmptyTree, getGitRepository, getLineParentMapping, getParentCommitIds } from './git';
 import type { DateFormatStyle } from './utils';
-import { formatDate, getGitBlameConfig, getRepositoryRelativePath, toGitUri, toMultiFileDiffEditorUris } from './utils';
+import { defaultDateFormatStyle, formatDate, getGitBlameConfig, getRepositoryRelativePath, toGitUri, toMultiFileDiffEditorUris } from './utils';
 
 interface LineHistoryEntry {
     blame: Blame,
@@ -393,7 +393,7 @@ function focusLineHistoryEntry(quickPick: vscode.QuickPick<LineHistoryQuickPickI
 
 function toLineHistoryQuickPickItem(entry: LineHistoryEntry): LineHistoryQuickPickItem {
     const activeStyle = getGitBlameConfig().dateFormatStyle;
-    const dateStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
+    const dateStyle: DateFormatStyle = activeStyle === 'relative' ? defaultDateFormatStyle : activeStyle;
     const dateText = formatDate(entry.blame.timestamp, dateStyle);
     const lineText = entry.lineText || '(empty line)';
     const changeSymbol = getLineHistoryChangeSymbol(entry.changeKind);

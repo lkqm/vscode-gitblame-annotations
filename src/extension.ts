@@ -3,8 +3,8 @@ import * as vscode from 'vscode';
 import { Uri } from 'vscode';
 import { Blame, buildCommitUrl, getBlames, getChanges, getEmptyTree, getFileRevisionNumbers, getFileStatus, getGitRepository, getParentCommitId, getRepoWebBase } from './git';
 import { registerLineHistoryProviders, showLineHistory } from './lineHistory';
-import type { AuthorNameStyle, DateFormatStyle, GitBlameConfig } from './utils';
-import { buildUncommitBlame, formatAuthor, formatDate, getCommitColor, getGitBlameConfig, getRepositoryRelativePath, getTextWidth, resolveChange, toMultiFileDiffEditorUris, toNamedGitUri, trancateText } from './utils';
+import type { AbsoluteDateFormatStyle, AuthorNameStyle, GitBlameConfig } from './utils';
+import { buildUncommitBlame, defaultDateFormatStyle, formatAuthor, formatDate, formatDateTime, getCommitColor, getGitBlameConfig, getRepositoryRelativePath, getTextWidth, resolveChange, toMultiFileDiffEditorUris, toNamedGitUri, trancateText } from './utils';
 
 // 全局状态
 const fileBlameStates = new Map<string, boolean>();
@@ -23,9 +23,9 @@ const MaxAuthorWidth = 14;
 * 激活插件
 */
 export function activate(context: vscode.ExtensionContext) {
-    registerLineHistoryProviders(context);
     registerCommands(context);
     registerListeners(context);
+    registerLineHistoryProviders(context);
     const editor = vscode.window.activeTextEditor;
     if (editor) {
         updateMenuContext(editor.document);
@@ -252,42 +252,57 @@ function registerListeners(context: vscode.ExtensionContext) {
         }
     });
 
-    // Highlight all lines of the commit under the cursor
-    const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
-        if (!getGitBlameConfig().highlightChangedLines) return;
-
-        const editor = event.textEditor;
-        const uri = editor.document.uri.toString();
-        if (!fileBlameStates.get(uri)) return;
-        const state = fileDecorations.get(uri);
-        if (!state) return;
-
-        if (!state.highlightDecorationType) {
-            state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
-                isWholeLine: true,
-                backgroundColor: "rgba(0, 188, 242, 0.2)"
-            });
-        }
-
-        const lineIdx = event.selections[0].active.line;
-        const blame = state.lineBlames?.get(lineIdx);
-
-        if (!blame?.commited) {
-            editor.setDecorations(state.highlightDecorationType, []);
+    // Configuration change
+    const configurationChangeSubscription = vscode.workspace.onDidChangeConfiguration(async event => {
+        if (!event.affectsConfiguration('gitblame')) {
             return;
         }
 
-        const ranges = state.blames
-            ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
-            .filter((r): r is vscode.Range => r !== null) ?? [];
-        editor.setDecorations(state.highlightDecorationType, ranges);
+        const config = getGitBlameConfig();
+        const shouldRefreshAnnotations = event.affectsConfiguration('gitblame.mergeCommitLines')
+            || event.affectsConfiguration('gitblame.showCommitNumber')
+            || event.affectsConfiguration('gitblame.dateFormatStyle')
+            || event.affectsConfiguration('gitblame.authorNameStyle');
+        const shouldUpdateHighlight = event.affectsConfiguration('gitblame.highlightChangedLines');
+        const blamedDocumentUris = [...fileBlameStates.entries()]
+            .filter(([_, enabled]) => enabled)
+            .map(([documentUri]) => documentUri);
+        for (const documentUri of blamedDocumentUris) {
+            const editors = vscode.window.visibleTextEditors.filter(editor => editor.document.uri.toString() === documentUri);
+            if (shouldUpdateHighlight) {
+                editors.forEach(editor => updateCommitHighlight(editor, config.highlightChangedLines));
+            }
+
+            if (shouldRefreshAnnotations) {
+                if (editors.length > 0) {
+                    await showDecorations(editors, true);
+                    continue;
+                }
+
+                const decorations = fileDecorations.get(documentUri);
+                if (decorations) {
+                    decorations.decorationOptions = undefined;
+                }
+            }
+        }
+    });
+
+    // Highlight all lines of the commit under the cursor
+    const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection(event => {
+        const config = getGitBlameConfig();
+        if (config.highlightChangedLines) {
+            updateCommitHighlight(event.textEditor, true);
+        }
     });
 
     context.subscriptions.push(
         editorChangeSubscription, visibleEditorChangeSubscription, closeDocumentSubscription,
-        saveDocumentSubscription, changeDocumentSubscription, selectionChangeSubscription
+        saveDocumentSubscription, changeDocumentSubscription, configurationChangeSubscription,
+        selectionChangeSubscription
     );
 }
+
+
 
 /**
 * 显示装饰器
@@ -570,6 +585,41 @@ async function updateMenuContext(document: vscode.TextDocument, currentState: bo
     vscode.commands.executeCommand('setContext', 'gitblame.hideMenuState', supportsBlameMenu && fileBlameState);
 }
 
+function updateCommitHighlight(editor: vscode.TextEditor, enabled: boolean) {
+    const uri = editor.document.uri.toString();
+    if (!fileBlameStates.get(uri)) return;
+    const state = fileDecorations.get(uri);
+    if (!state) return;
+    if (!enabled && !state.highlightDecorationType) {
+        return;
+    }
+
+    if (!state.highlightDecorationType) {
+        state.highlightDecorationType = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: "rgba(0, 188, 242, 0.2)"
+        });
+    }
+
+    if (!enabled) {
+        editor.setDecorations(state.highlightDecorationType, []);
+        return;
+    }
+
+    const lineIdx = editor.selection.active.line;
+    const blame = state.lineBlames?.get(lineIdx);
+
+    if (!blame?.commited) {
+        editor.setDecorations(state.highlightDecorationType, []);
+        return;
+    }
+
+    const ranges = state.blames
+        ?.map((b, i) => b.commit === blame.commit ? new vscode.Range(i, 0, i, 0) : null)
+        .filter((r): r is vscode.Range => r !== null) ?? [];
+    editor.setDecorations(state.highlightDecorationType, ranges);
+}
+
 function buildDecorationOptions(blames: Blame[], config: GitBlameConfig = getGitBlameConfig()): vscode.DecorationOptions[][] {
     const maxWidth = fillTitles(blames, config);
     if (maxWidth <= 0) {
@@ -644,8 +694,8 @@ function buildHoverMessage(blame: Blame, fileName: string, repoWebBase: string, 
     const activeStyle = getGitBlameConfig().dateFormatStyle;
 
     const relativeDate = formatDate(blame.timestamp, 'relative')
-    const hoverStyle: DateFormatStyle = activeStyle === 'relative' ? 'YYYY-MM-DD' : activeStyle;
-    const dateText = formatDate(blame.timestamp, hoverStyle);
+    const hoverStyle: AbsoluteDateFormatStyle = activeStyle === 'relative' ? defaultDateFormatStyle : activeStyle;
+    const dateText = formatDateTime(blame.timestamp, hoverStyle);
 
     const content = new vscode.MarkdownString();
     const [commitUrl, gitPlatform] = buildCommitUrl(repoWebBase, blame.commit);

@@ -6,8 +6,9 @@ import { Blame, Change } from './git';
 
 // keep the defaults in sync with package.json
 export type DateFormatStyle = 'YYYY-MM-DD' | 'Y/M/D' | 'DD.MM.YYYY' | 'relative'
+export type AbsoluteDateFormatStyle = Exclude<DateFormatStyle, 'relative'>
 export const VALID_DATEFORMATSTYLES: DateFormatStyle[] = ['YYYY-MM-DD', 'Y/M/D', 'DD.MM.YYYY', 'relative'];
-export const defaultDateFormatStyle: DateFormatStyle = 'Y/M/D'
+export const defaultDateFormatStyle: AbsoluteDateFormatStyle = 'Y/M/D'
 
 export type AuthorNameStyle = 'full' | 'first' | 'last'
 export const VALID_AUTHORNAMESTYLES: AuthorNameStyle[] = ['full', 'first', 'last'];
@@ -60,6 +61,13 @@ export function formatDate(timestamp: number, style: DateFormatStyle): string {
 	};
 	const [locale, options] = map[style as Exclude<DateFormatStyle, 'relative'>];
 	return new Intl.DateTimeFormat(locale, options).format(date);
+}
+
+export function formatDateTime(timestamp: number, style: AbsoluteDateFormatStyle): string {
+	const date = new Date(timestamp * 1000);
+	const hours = `${date.getHours()}`.padStart(2, '0');
+	const minutes = `${date.getMinutes()}`.padStart(2, '0');
+	return `${formatDate(timestamp, style)} ${hours}:${minutes}`;
 }
 
 export function formatAuthor(name: string, style: AuthorNameStyle) {
